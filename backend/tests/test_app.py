@@ -244,7 +244,9 @@ def test_site_settings_default_to_chinese(tmp_path: Path) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["default_locale"] == "zh-CN"
-    assert data["announcement"]["enabled"] is False
+    assert data["announcement"]["enabled"] is True
+    assert "JokoAI" in data["announcement"]["title"]
+    assert "https://ai.get-money.locker" in data["announcement"]["body"]
 
 
 def test_admin_can_update_site_settings(tmp_path: Path) -> None:

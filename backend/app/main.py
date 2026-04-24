@@ -346,7 +346,7 @@ def create_app(
             locked = {"base_url", "usage_path", "user_name", "managed_by_auth"}
             if clear_api_key or locked.intersection(updates):
                 if locked.intersection(updates):
-                    raise HTTPException(status_code=403, detail="Signed-in accounts use a fixed Sub2API endpoint and profile")
+                    raise HTTPException(status_code=403, detail="Signed-in accounts use a fixed JokoAI endpoint and profile")
         if clear_api_key:
             updates["api_key"] = ""
         elif "api_key" in updates and updates["api_key"] == "":
@@ -698,7 +698,7 @@ async def _complete_auth_flow(
     access_token = str(auth_result.get("access_token") or "").strip()
     user = auth_result.get("user")
     if not access_token or not isinstance(user, dict):
-        raise HTTPException(status_code=502, detail="Sub2API login response was missing user credentials")
+        raise HTTPException(status_code=502, detail="JokoAI login response was missing user credentials")
 
     user_id = int(user["id"])
     owner_id = f"user:{user_id}"
@@ -757,7 +757,7 @@ async def _resolve_user_api_key(
     created = await auth_client.create_key(settings.auth_base_url, access_token, payload)
     key = str(created.get("key") or "").strip()
     if not key:
-        raise HTTPException(status_code=502, detail="Sub2API did not return a usable API key")
+        raise HTTPException(status_code=502, detail="JokoAI did not return a usable API key")
     return key
 
 

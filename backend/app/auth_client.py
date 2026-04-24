@@ -59,7 +59,7 @@ class Sub2APIAuthClient:
             access_token=access_token,
         )
         if not isinstance(data, dict):
-            raise ProviderError(502, "Sub2API 返回的 API Key 数据格式不正确", data)
+            raise ProviderError(502, "JokoAI 返回的 API Key 数据格式不正确", data)
         return data
 
     async def _request(
@@ -113,4 +113,4 @@ def _extract_error_message(payload: Any, response: httpx.Response) -> str:
             return str(error["message"])
         if error:
             return str(error)
-    return response.text[:1000] or f"Sub2API returned HTTP {response.status_code}"
+    return response.text[:1000] or f"JokoAI returned HTTP {response.status_code}"

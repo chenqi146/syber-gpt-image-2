@@ -13,6 +13,18 @@ from .settings import Settings
 
 
 LEGACY_OWNER_ID = "legacy:default"
+DEFAULT_SITE_LOCALE = "zh-CN"
+DEFAULT_ANNOUNCEMENT_TITLE = "欢迎来到 JokoAI 图像系统"
+DEFAULT_ANNOUNCEMENT_BODY = """欢迎使用 JokoAI 图像生态系统。
+
+站主联系方式：
+QQ：935764227
+Telegram：https://t.me/jokoacoount
+
+中转站 / 充值站点：
+https://ai.get-money.locker
+
+如需充值、额度支持或账号协助，请通过以上方式联系。"""
 
 
 def utc_now() -> str:
@@ -108,7 +120,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS site_settings (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     default_locale TEXT NOT NULL DEFAULT 'zh-CN',
-                    announcement_enabled INTEGER NOT NULL DEFAULT 0,
+                    announcement_enabled INTEGER NOT NULL DEFAULT 1,
                     announcement_title TEXT NOT NULL DEFAULT '',
                     announcement_body TEXT NOT NULL DEFAULT '',
                     announcement_updated_at TEXT,
@@ -201,20 +213,41 @@ class Database:
         )
 
     def _ensure_site_settings(self, conn: sqlite3.Connection) -> None:
-        row = conn.execute("SELECT id FROM site_settings WHERE id = 1").fetchone()
-        if row is not None:
-            return
+        row = conn.execute("SELECT * FROM site_settings WHERE id = 1").fetchone()
         now = utc_now()
-        conn.execute(
-            """
-            INSERT INTO site_settings (
-                id, default_locale, announcement_enabled, announcement_title,
-                announcement_body, announcement_updated_at, created_at, updated_at
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO site_settings (
+                    id, default_locale, announcement_enabled, announcement_title,
+                    announcement_body, announcement_updated_at, created_at, updated_at
+                )
+                VALUES (1, ?, 1, ?, ?, ?, ?, ?)
+                """,
+                (DEFAULT_SITE_LOCALE, DEFAULT_ANNOUNCEMENT_TITLE, DEFAULT_ANNOUNCEMENT_BODY, now, now, now),
             )
-            VALUES (1, 'zh-CN', 0, '', '', ?, ?, ?)
-            """,
-            (now, now, now),
+            return
+
+        needs_default_announcement = (
+            not str(row["announcement_title"] or "").strip()
+            and not str(row["announcement_body"] or "").strip()
+            and int(row["announcement_enabled"] or 0) == 0
+            and row["announcement_updated_at"] == row["created_at"]
         )
+        updates: dict[str, Any] = {}
+        if not str(row["default_locale"] or "").strip():
+            updates["default_locale"] = DEFAULT_SITE_LOCALE
+        if needs_default_announcement:
+            updates["announcement_enabled"] = 1
+            updates["announcement_title"] = DEFAULT_ANNOUNCEMENT_TITLE
+            updates["announcement_body"] = DEFAULT_ANNOUNCEMENT_BODY
+            updates["announcement_updated_at"] = now
+        if updates:
+            updates["updated_at"] = now
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            values = list(updates.values())
+            values.append(1)
+            conn.execute(f"UPDATE site_settings SET {assignments} WHERE id = ?", values)
 
     def _insert_owner_config(
         self,

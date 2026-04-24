@@ -5,39 +5,6 @@ import { useAuth } from '../auth';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import { useSite } from '../site';
 
-const mockFeed = [
-  {
-    id: '#001_CYBER',
-    img: 'https://images.unsplash.com/photo-1605806616949-1e87b487cb2a?q=80&w=600&auto=format&fit=crop',
-    prompt: 'A neon-lit cyberpunk street alley, rain slicked pavement reflecting cyan and magenta holographic advertisements. Tall imposing brutalist skyscrapers in the background.'
-  },
-  {
-    id: '#002_MECHA',
-    img: 'https://images.unsplash.com/photo-1535295972055-1c762f4483e5?q=80&w=600&auto=format&fit=crop',
-    prompt: 'Heavy tactical mecha suit glowing with internal neon orange energy. Standing in a desolate, post-apocalyptic wasteland under a dark sky.'
-  },
-  {
-    id: '#003_PORTRAIT',
-    img: 'https://images.unsplash.com/photo-1620336655055-088d06e36bf0?q=80&w=600&auto=format&fit=crop',
-    prompt: 'Close up portrait of a rogue hacker with intricate glowing cybernetic facial implants. Harsh rim lighting in vibrant magenta and deep blue.'
-  },
-  {
-    id: '#004_VEHICLE',
-    img: 'https://images.unsplash.com/photo-1542382257-80da9fb9f5abc?q=80&w=600&auto=format&fit=crop',
-    prompt: 'Sleek hover motorcycle speeding through a dark, rain-drenched highway tunnel. Trailing light streaks of bright cyan.'
-  },
-  {
-    id: '#005_LANDSCAPE',
-    img: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=600&auto=format&fit=crop',
-    prompt: 'Surreal alien landscape with massive glowing crystal monoliths emitting toxic green light. A huge shattered moon in the background sky.'
-  },
-  {
-    id: '#006_INTERIOR',
-    img: 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?q=80&w=600&auto=format&fit=crop',
-    prompt: 'Cluttered hacker den illuminated only by the glow of dozens of floating holographic screens displaying scrolling red code.'
-  }
-];
-
 export default function Home() {
   const { viewer } = useAuth();
   const { t } = useSite();
@@ -47,17 +14,21 @@ export default function Home() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewItem, setPreviewItem] = useState<{ imageUrl: string; prompt: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [feedLoading, setFeedLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    Promise.all([getHistory({ limit: 12 }), getInspirations({ limit: 60 })])
+    setFeedLoading(true);
+    const task = Promise.all([getHistory({ limit: 12 }), getInspirations({ limit: 60 })]);
+    task
       .then(([historyData, inspirationData]) => {
         setHistory(historyData.items.filter((item) => item.status === 'succeeded' && Boolean(item.image_url)));
         setInspirations(inspirationData.items);
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => setError(err.message))
+      .finally(() => setFeedLoading(false));
   }, [viewer?.owner_id]);
 
   async function handleExecute() {
@@ -93,8 +64,7 @@ export default function Home() {
     prompt: item.prompt,
     title: item.title,
   }));
-  const feed = [...generatedFeed, ...inspirationFeed].filter((item) => item.img) || mockFeed;
-  const visibleFeed = feed.length ? feed : mockFeed;
+  const visibleFeed = [...generatedFeed, ...inspirationFeed].filter((item) => item.img);
 
   return (
     <div className="pt-24 pb-48 px-6 max-w-[1440px] mx-auto min-h-screen bg-[radial-gradient(ellipse_at_top,var(--color-surface-container-high),var(--color-background))] font-mono">
@@ -122,6 +92,25 @@ export default function Home() {
 
       {error && <div className="mb-6 border border-error/40 bg-error/10 p-4 text-error text-xs">{error}</div>}
 
+      {feedLoading ? (
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, index) => (
+            <div key={index} className="relative aspect-[3/4] overflow-hidden border border-primary/20 bg-black/60">
+              <div className="absolute inset-0 animate-pulse bg-[linear-gradient(180deg,rgba(0,243,255,0.08),rgba(255,0,255,0.08))]" />
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
+              <div className="absolute bottom-0 left-0 right-0 p-4">
+                <div className="mb-3 h-3 w-24 animate-pulse bg-white/10" />
+                <div className="mb-2 h-4 w-full animate-pulse bg-white/10" />
+                <div className="h-4 w-3/4 animate-pulse bg-white/10" />
+              </div>
+            </div>
+          ))}
+          <div className="col-span-full flex items-center justify-center gap-3 py-4 text-xs uppercase tracking-[0.3em] text-primary/70">
+            <Loader2 className="animate-spin" size={16} />
+            {t('home_loading_feed')}
+          </div>
+        </div>
+      ) : visibleFeed.length > 0 ? (
       <div className="masonry-grid flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-primary/20">
         {visibleFeed.map((item, index) => (
           <div
@@ -177,6 +166,11 @@ export default function Home() {
           </div>
         ))}
       </div>
+      ) : (
+        <div className="flex min-h-[320px] items-center justify-center border border-primary/20 bg-black/50 px-6 text-sm text-white/50">
+          {t('home_empty_feed')}
+        </div>
+      )}
 
       <div className="fixed bottom-6 left-6 right-6 md:left-auto md:right-auto md:w-[calc(100%-3rem)] max-w-[960px] mx-auto bg-surface-container/90 backdrop-blur-xl border border-primary/40 p-5 rounded-sm shadow-[0_-20px_40px_rgba(0,0,0,0.8)] z-50 font-mono">
         <div className="flex items-center gap-4 mb-4">

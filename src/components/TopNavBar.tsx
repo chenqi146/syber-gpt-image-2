@@ -5,6 +5,7 @@ import { AccountInfo, formatBalance, getAccount, logoutAccount } from '../api';
 import { useAuth } from '../auth';
 import { useSite } from '../site';
 import AvatarBadge from './AvatarBadge';
+import jokoLogo from '../../joko.svg';
 
 export default function TopNavBar() {
   const location = useLocation();
@@ -30,17 +31,21 @@ export default function TopNavBar() {
   const viewerLabel = viewer?.authenticated
     ? (viewer.user?.username || viewer.user?.email || 'USER')
     : t('home_guest', { value: viewer?.guest_id?.slice(0, 8) || '--' });
+  const rechargeUrl = 'https://ai.get-money.locker';
 
   return (
     <header className="fixed top-0 left-0 w-full z-[100] flex justify-between items-center px-6 h-16 bg-surface-bright border-b border-primary/30 shadow-[0_0_20px_rgba(0,243,255,0.1)] shrink-0 font-mono">
       <div className="flex items-center gap-8">
         <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-primary rounded-sm flex items-center justify-center">
-            <div className="w-6 h-6 border-2 border-background rotate-45"></div>
+          <img alt="joko-image" className="h-10 w-10 rounded-sm object-contain" src={jokoLogo} />
+          <div className="flex flex-col gap-1">
+            <Link to="/" className="text-2xl font-black tracking-tighter text-white hover:text-primary transition-colors">
+              joko-<span className="text-secondary">image</span>
+            </Link>
+            <div className="w-fit border border-secondary/30 bg-secondary/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.25em] text-secondary">
+              JOKO-AI
+            </div>
           </div>
-          <Link to="/" className="text-2xl font-black italic tracking-tighter text-white hover:text-primary transition-colors">
-            CYBER<span className="text-secondary">GEN</span>
-          </Link>
         </div>
         <nav className="hidden md:flex gap-6">
           <Link
@@ -87,6 +92,15 @@ export default function TopNavBar() {
           <Bell size={16} />
           {siteSettings?.announcement.enabled ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-secondary" /> : null}
         </button>
+
+        <a
+          className="flex h-10 items-center border border-primary/30 px-4 text-[10px] font-bold uppercase tracking-widest text-primary transition-colors hover:bg-primary/10"
+          href={rechargeUrl}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {t('top_recharge')}
+        </a>
 
         {viewer?.authenticated ? (
           <button

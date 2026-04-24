@@ -7,6 +7,7 @@ import { useSite } from '../site';
 export default function Billing() {
   const { viewer } = useAuth();
   const { t } = useSite();
+  const rechargeUrl = 'https://ai.get-money.locker';
   const [balance, setBalance] = useState<BalanceInfo>();
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [error, setError] = useState('');
@@ -38,6 +39,18 @@ export default function Billing() {
           </div>
           <div className="text-5xl text-white font-black tracking-tighter">{formatBalance(balance)}</div>
           <div className="mt-4 text-xs text-white/40">{balance?.ok ? t('billing_synced') : balance?.message || t('billing_not_configured')}</div>
+          <div className="mt-6 border-t border-white/10 pt-5">
+            <div className="mb-3 text-xs text-white/50">{t('billing_recharge_desc')}</div>
+            <a
+              className="inline-flex items-center gap-2 border border-primary/30 px-5 py-3 text-xs font-bold uppercase tracking-widest text-primary transition-colors hover:bg-primary/10"
+              href={rechargeUrl}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {t('billing_recharge')}
+              <ArrowRight size={14} />
+            </a>
+          </div>
         </div>
 
         <div className="lg:col-span-2 bg-black border border-primary/20 p-6">
