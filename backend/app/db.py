@@ -45,6 +45,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS owner_config (
                     owner_id TEXT PRIMARY KEY,
                     api_key TEXT NOT NULL DEFAULT '',
+                    managed_api_key TEXT NOT NULL DEFAULT '',
                     base_url TEXT NOT NULL,
                     usage_path TEXT NOT NULL,
                     model TEXT NOT NULL,
@@ -136,6 +137,10 @@ class Database:
             )
 
     def _migrate_legacy_schema(self, conn: sqlite3.Connection, settings: Settings) -> None:
+        owner_config_columns = _table_columns(conn, "owner_config")
+        if "managed_api_key" not in owner_config_columns:
+            conn.execute("ALTER TABLE owner_config ADD COLUMN managed_api_key TEXT NOT NULL DEFAULT ''")
+
         image_columns = _table_columns(conn, "image_history")
         if "owner_id" not in image_columns:
             conn.execute(
@@ -164,6 +169,7 @@ class Database:
             settings,
             {
                 "api_key": row["api_key"],
+                "managed_api_key": "",
                 "base_url": row["base_url"],
                 "usage_path": row["usage_path"],
                 "model": row["model"],
@@ -187,6 +193,7 @@ class Database:
         values = {
             "owner_id": owner_id,
             "api_key": "",
+            "managed_api_key": "",
             "base_url": settings.provider_base_url,
             "usage_path": settings.provider_usage_path,
             "model": settings.image_model,
@@ -202,11 +209,11 @@ class Database:
         conn.execute(
             """
             INSERT INTO owner_config (
-                owner_id, api_key, base_url, usage_path, model, default_size,
+                owner_id, api_key, managed_api_key, base_url, usage_path, model, default_size,
                 default_quality, user_name, managed_by_auth, created_at, updated_at
             )
             VALUES (
-                :owner_id, :api_key, :base_url, :usage_path, :model, :default_size,
+                :owner_id, :api_key, :managed_api_key, :base_url, :usage_path, :model, :default_size,
                 :default_quality, :user_name, :managed_by_auth, :created_at, :updated_at
             )
             """,
@@ -236,11 +243,12 @@ class Database:
                 row = conn.execute("SELECT * FROM owner_config WHERE owner_id = ?", (owner_id,)).fetchone()
             if row is None:
                 raise RuntimeError("owner_config was not initialized")
-            return dict(row)
+            return _config_row(row)
 
     def update_config(self, owner_id: str, settings: Settings, payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {
             "api_key",
+            "managed_api_key",
             "base_url",
             "usage_path",
             "model",
@@ -272,14 +280,21 @@ class Database:
         user_name: str,
     ) -> dict[str, Any]:
         current = self.get_config(owner_id, settings, user_name=user_name)
+        manual_api_key = str(current.get("manual_api_key") or "")
+        previous_managed_api_key = str(current.get("managed_api_key") or "")
         payload = {
-            "api_key": api_key,
+            "managed_api_key": api_key,
             "base_url": settings.provider_base_url,
             "usage_path": settings.provider_usage_path,
             "model": current.get("model") or settings.image_model,
             "user_name": user_name,
             "managed_by_auth": 1,
         }
+        preserve_manual_override = bool(current.get("managed_by_auth")) and bool(
+            manual_api_key and manual_api_key != previous_managed_api_key
+        )
+        if not preserve_manual_override:
+            payload["api_key"] = ""
         return self.update_config(owner_id, settings, payload)
 
     def merge_owner_data(
@@ -705,3 +720,26 @@ def _inspiration_row(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["raw"] = _json_load(data.pop("raw_json"))
     return data
+
+
+def _config_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    manual_api_key = str(data.get("api_key") or "")
+    managed_api_key = str(data.get("managed_api_key") or "")
+    effective_api_key = manual_api_key or managed_api_key
+    data["manual_api_key"] = manual_api_key
+    data["managed_api_key"] = managed_api_key
+    data["api_key_source"] = _config_api_key_source(data)
+    data["api_key"] = effective_api_key
+    return data
+
+
+def _config_api_key_source(config: dict[str, Any]) -> str:
+    if config.get("managed_by_auth"):
+        manual_api_key = str(config.get("api_key") or "")
+        managed_api_key = str(config.get("managed_api_key") or "")
+        if manual_api_key and manual_api_key != managed_api_key:
+            return "manual_override"
+        if managed_api_key:
+            return "managed"
+    return "manual"

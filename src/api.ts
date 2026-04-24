@@ -4,7 +4,7 @@ export type ViewerInfo = {
   authenticated: boolean;
   owner_id: string;
   guest_id: string;
-  api_key_source: 'managed' | 'manual';
+  api_key_source: 'managed' | 'manual' | 'manual_override';
   user: {
     id: number;
     email: string;
@@ -14,8 +14,6 @@ export type ViewerInfo = {
 
 export type AppConfig = {
   owner_id: string;
-  base_url: string;
-  usage_path: string;
   model: string;
   default_size: string;
   default_quality: string;
@@ -23,8 +21,8 @@ export type AppConfig = {
   managed_by_auth: boolean;
   api_key_set: boolean;
   api_key_hint: string;
+  api_key_source: 'managed' | 'manual' | 'manual_override';
   api_key_editable: boolean;
-  base_url_editable: boolean;
   authenticated: boolean;
 };
 
@@ -90,9 +88,8 @@ export type AccountInfo = {
     authenticated: boolean;
     guest: boolean;
     api_key_set: boolean;
-    api_key_source: 'managed' | 'manual';
+    api_key_source: 'managed' | 'manual' | 'manual_override';
     model: string;
-    base_url: string;
   };
   balance: BalanceInfo;
   stats: {

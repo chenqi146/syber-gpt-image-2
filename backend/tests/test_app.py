@@ -75,14 +75,17 @@ class FakeAuthClient:
         return []
 
     async def list_available_groups(self, base_url: str, access_token: str) -> list[dict[str, Any]]:
-        return [{"id": 42, "platform": "openai", "status": "active"}]
+        return [
+            {"id": 41, "name": "general-openai", "platform": "openai", "status": "active"},
+            {"id": 42, "name": "gpt-image-2", "platform": "openai", "status": "active"},
+        ]
 
     async def create_key(self, base_url: str, access_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         key = {
             "id": 99,
             "key": "sk-user-managed-123456",
             "name": payload["name"],
-            "group": {"id": payload.get("group_id"), "platform": "openai"},
+            "group": {"id": payload.get("group_id"), "name": "gpt-image-2", "platform": "openai"},
             "status": "active",
         }
         self.created_keys.append(key)
@@ -196,6 +199,7 @@ def test_login_binds_managed_key_and_merges_guest_history(tmp_path: Path) -> Non
     assert login.status_code == 200
     assert login.json()["viewer"]["authenticated"] is True
     assert auth.created_keys and auth.created_keys[0]["name"] == "cybergen-image"
+    assert auth.created_keys[0]["group"]["id"] == 42
 
     config = client.get("/api/config").json()
     history = client.get("/api/history").json()["items"]
@@ -207,6 +211,28 @@ def test_login_binds_managed_key_and_merges_guest_history(tmp_path: Path) -> Non
     assert history[0]["prompt"] == "guest prompt"
     assert account["viewer"]["user"]["email"] == "demo@example.com"
     assert account["user"]["api_key_source"] == "managed"
+
+
+def test_signed_in_user_can_override_key_and_clear_back_to_managed(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    login = client.post("/api/auth/login", json={"email": "demo@example.com", "password": "secret123"})
+    assert login.status_code == 200
+
+    overridden = client.put("/api/config", json={"api_key": "sk-shared-bonus-654321"})
+    assert overridden.status_code == 200
+    overridden_data = overridden.json()
+    assert overridden_data["api_key_hint"] == "sk-sha...4321"
+    assert overridden_data["api_key_source"] == "manual_override"
+
+    account = client.get("/api/account").json()
+    assert account["user"]["api_key_source"] == "manual_override"
+
+    restored = client.put("/api/config", json={"clear_api_key": True})
+    assert restored.status_code == 200
+    restored_data = restored.json()
+    assert restored_data["api_key_hint"] == "sk-use...3456"
+    assert restored_data["api_key_source"] == "managed"
 
 
 def test_parse_inspiration_markdown() -> None:

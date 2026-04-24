@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { LogOut } from 'lucide-react';
 import { AccountInfo, formatBalance, getAccount, logoutAccount } from '../api';
 import { useAuth } from '../auth';
+import AvatarBadge from './AvatarBadge';
 
 export default function TopNavBar() {
   const location = useLocation();
@@ -95,11 +96,13 @@ export default function TopNavBar() {
           </div>
         )}
 
-        <Link to="/config" className="w-10 h-10 rounded-full border-2 border-secondary bg-gradient-to-tr from-secondary/20 to-transparent overflow-hidden cursor-pointer hover:border-primary transition-colors shadow-[0_0_8px_rgba(255,0,255,0.2)]">
-          <img
-            alt="User Profile"
-            className="w-full h-full object-cover mix-blend-luminosity hover:mix-blend-normal transition-all"
-            src="https://images.unsplash.com/photo-1542909168-82c3e7fdca5c?q=80&w=150&auto=format&fit=crop"
+        <Link to="/config" className="cursor-pointer hover:border-primary transition-colors shadow-[0_0_8px_rgba(255,0,255,0.2)]">
+          <AvatarBadge
+            className="w-10 h-10 rounded-full border-2"
+            textClassName="text-xs"
+            name={viewer?.user?.username}
+            email={viewer?.user?.email}
+            guestId={viewer?.guest_id}
           />
         </Link>
       </div>

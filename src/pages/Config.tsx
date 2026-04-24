@@ -17,6 +17,7 @@ import {
   testConfig,
 } from '../api';
 import { useAuth } from '../auth';
+import AvatarBadge from '../components/AvatarBadge';
 
 export default function Config() {
   const { viewer } = useAuth();
@@ -58,8 +59,6 @@ export default function Config() {
         default_size: config.default_size,
         default_quality: config.default_quality,
         user_name: config.managed_by_auth ? undefined : config.user_name,
-        base_url: config.base_url_editable ? config.base_url : undefined,
-        usage_path: config.base_url_editable ? config.usage_path : undefined,
         api_key: config.api_key_editable ? apiKey.trim() || undefined : undefined,
       });
       setConfig(updated);
@@ -102,16 +101,36 @@ export default function Config() {
     }
   }
 
+  async function handleResetKey() {
+    if (!config?.managed_by_auth) return;
+    setSaving(true);
+    setError('');
+    setStatus('');
+    try {
+      const updated = await saveConfig({ clear_api_key: true });
+      setConfig(updated);
+      setApiKey('');
+      await refresh();
+      setStatus('RESTORED MANAGED KEY');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="md:ml-64 px-6 md:px-12 py-8 max-w-[1440px] mx-auto min-h-screen pt-24 pb-12 bg-[radial-gradient(ellipse_at_top,var(--color-surface-container-high),var(--color-background))] font-mono">
       <section className="flex flex-col md:flex-row items-start md:items-center gap-6 mb-12">
         <div className="w-24 h-24 border border-secondary relative bg-black p-1 shadow-[0_0_15px_rgba(255,0,255,0.2)]">
           <div className="absolute -top-1 -left-1 w-2 h-2 bg-secondary"></div>
           <div className="absolute -bottom-1 -right-1 w-2 h-2 bg-secondary"></div>
-          <img
-            alt="Avatar"
-            className="w-full h-full object-cover filter grayscale sepia-[.2] hue-rotate-[250deg]"
-            src="https://images.unsplash.com/photo-1542909168-82c3e7fdca5c?q=80&w=150&auto=format&fit=crop"
+          <AvatarBadge
+            className="w-full h-full"
+            textClassName="text-2xl"
+            name={viewer?.user?.username || config?.user_name}
+            email={viewer?.user?.email}
+            guestId={viewer?.guest_id}
           />
         </div>
         <div className="flex flex-col gap-1">
@@ -171,8 +190,8 @@ export default function Config() {
               </h3>
               <p className="text-white/50 text-xs leading-relaxed">
                 {config?.managed_by_auth
-                  ? 'This config is attached to the signed-in Sub2API user. The personal API key is selected automatically and not edited here.'
-                  : 'Guest mode keeps data isolated by guest cookie. This mode uses a manually saved Sub2API API key.'}
+                  ? 'This config is attached to the signed-in Sub2API user. The personal API key is selected automatically, and you can override it with a shared or welfare key when needed.'
+                  : 'Guest mode keeps data isolated by guest cookie. This mode uses a manually saved Sub2API API key, and the backend routes requests to the internal image service.'}
               </p>
             </div>
           </div>
@@ -202,15 +221,6 @@ export default function Config() {
               />
             </Field>
 
-            <Field label="SUB2API_BASE_URL">
-              <input
-                className="input-cyber"
-                disabled={!config?.base_url_editable}
-                value={config?.base_url || ''}
-                onChange={(event) => setConfig((current) => current && { ...current, base_url: event.target.value })}
-              />
-            </Field>
-
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <Field label="MODEL">
                 <input className="input-cyber" value={config?.model || 'gpt-image-2'} onChange={(event) => setConfig((current) => current && { ...current, model: event.target.value })} />
@@ -233,25 +243,15 @@ export default function Config() {
               </Field>
             </div>
 
-            <Field label="USAGE_PATH">
-              <input
-                className="input-cyber"
-                disabled={!config?.base_url_editable}
-                value={config?.usage_path || '/v1/usage'}
-                onChange={(event) => setConfig((current) => current && { ...current, usage_path: event.target.value })}
-              />
-            </Field>
-
             <div className="flex flex-col gap-2 relative">
               <label className="text-secondary text-[10px] uppercase tracking-widest font-bold mb-1" htmlFor="api_key">SUB2API_KEY</label>
               <div className="relative">
                 <input
                   className="input-cyber pr-12"
-                  disabled={!config?.api_key_editable}
                   id="api_key"
                   placeholder={config?.api_key_set ? config.api_key_hint : 'sk-...'}
                   type="password"
-                  value={config?.api_key_editable ? apiKey : config?.api_key_hint || ''}
+                  value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
                 />
                 <button className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-secondary transition-colors" type="button">
@@ -259,8 +259,22 @@ export default function Config() {
                 </button>
               </div>
               <span className="text-[9px] text-white/30 text-right uppercase">
-                Saved key: {config?.api_key_set ? config.api_key_hint : 'NONE'} {config?.managed_by_auth ? '(managed)' : ''}
+                Saved key: {config?.api_key_set ? config.api_key_hint : 'NONE'}{' '}
+                {config?.api_key_source === 'managed'
+                  ? '(managed)'
+                  : config?.api_key_source === 'manual_override'
+                    ? '(manual override)'
+                    : '(manual)'}
               </span>
+              {config?.managed_by_auth && config?.api_key_source === 'manual_override' && (
+                <button
+                  className="self-end text-[10px] uppercase tracking-widest text-secondary hover:text-white transition-colors"
+                  type="button"
+                  onClick={handleResetKey}
+                >
+                  Restore managed key
+                </button>
+              )}
             </div>
 
             <div className="pt-6 flex flex-col sm:flex-row gap-3 justify-end border-t border-white/10 mt-4">

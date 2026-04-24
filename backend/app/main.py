@@ -86,6 +86,9 @@ class ViewerContext:
         }
 
 
+PREFERRED_IMAGE_GROUP_NAME = "gpt-image-2"
+
+
 def create_app(
     settings: Settings | None = None,
     provider: OpenAICompatibleImageClient | None = None,
@@ -311,9 +314,10 @@ def create_app(
         updates = payload.model_dump(exclude_unset=True)
         clear_api_key = bool(updates.pop("clear_api_key", False))
         if viewer.authenticated:
-            locked = {"api_key", "base_url", "usage_path", "user_name", "managed_by_auth"}
+            locked = {"base_url", "usage_path", "user_name", "managed_by_auth"}
             if clear_api_key or locked.intersection(updates):
-                raise HTTPException(status_code=403, detail="Signed-in accounts use Sub2API-managed configuration")
+                if locked.intersection(updates):
+                    raise HTTPException(status_code=403, detail="Signed-in accounts use a fixed Sub2API endpoint and profile")
         if clear_api_key:
             updates["api_key"] = ""
         elif "api_key" in updates and updates["api_key"] == "":
@@ -354,9 +358,8 @@ def create_app(
                 "authenticated": viewer.authenticated,
                 "guest": not viewer.authenticated,
                 "api_key_set": bool(config["api_key"]),
-                "api_key_source": "managed" if config["managed_by_auth"] else "manual",
+                "api_key_source": config["api_key_source"],
                 "model": config["model"],
-                "base_url": config["base_url"],
             },
             "balance": usage,
             "stats": db.stats(viewer.owner_id),
@@ -576,8 +579,6 @@ def _public_config(config: dict[str, Any], viewer: ViewerContext) -> dict[str, A
     managed = bool(config.get("managed_by_auth"))
     return {
         "owner_id": config["owner_id"],
-        "base_url": config["base_url"],
-        "usage_path": config["usage_path"],
         "model": config["model"],
         "default_size": config["default_size"],
         "default_quality": config["default_quality"],
@@ -585,8 +586,8 @@ def _public_config(config: dict[str, Any], viewer: ViewerContext) -> dict[str, A
         "managed_by_auth": managed,
         "api_key_set": bool(config["api_key"]),
         "api_key_hint": _mask_key(config["api_key"]),
-        "api_key_editable": not managed,
-        "base_url_editable": not managed,
+        "api_key_source": config["api_key_source"],
+        "api_key_editable": True,
         "authenticated": viewer.authenticated,
     }
 
@@ -596,7 +597,7 @@ def _viewer_payload(viewer: ViewerContext, config: dict[str, Any]) -> dict[str, 
         "authenticated": viewer.authenticated,
         "owner_id": viewer.owner_id,
         "guest_id": viewer.guest_id,
-        "api_key_source": "managed" if config.get("managed_by_auth") else "manual",
+        "api_key_source": config["api_key_source"],
         "user": viewer.user,
     }
 
@@ -707,10 +708,12 @@ async def _resolve_user_api_key(
 
 
 def _select_existing_key(keys: list[dict[str, Any]]) -> dict[str, Any] | None:
-    def sort_key(item: dict[str, Any]) -> tuple[int, int]:
+    def sort_key(item: dict[str, Any]) -> tuple[int, int, int]:
         status = 0 if item.get("status") == "active" else 1
-        platform = 0 if ((item.get("group") or {}).get("platform") == "openai") else 1
-        return status, platform
+        group = item.get("group") if isinstance(item.get("group"), dict) else {}
+        platform = 0 if group.get("platform") == "openai" else 1
+        preferred = 0 if _normalize_group_name(group.get("name")) == PREFERRED_IMAGE_GROUP_NAME else 1
+        return status, preferred, platform
 
     candidates = [item for item in keys if isinstance(item.get("key"), str) and item.get("key")]
     if not candidates:
@@ -719,18 +722,25 @@ def _select_existing_key(keys: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def _select_openai_group(groups: list[dict[str, Any]]) -> int | None:
-    ranked: list[tuple[int, int]] = []
+    ranked: list[tuple[int, int, int, int]] = []
     for item in groups:
         group_id = item.get("id")
         if not isinstance(group_id, int):
             continue
         status_rank = 0 if item.get("status") == "active" else 1
+        preferred_rank = 0 if _normalize_group_name(item.get("name")) == PREFERRED_IMAGE_GROUP_NAME else 1
         platform_rank = 0 if item.get("platform") == "openai" else 1
-        ranked.append((status_rank * 10 + platform_rank, group_id))
+        ranked.append((status_rank, preferred_rank, platform_rank, group_id))
     if not ranked:
         return None
-    ranked.sort(key=lambda item: item[0])
-    return ranked[0][1]
+    ranked.sort()
+    return ranked[0][3]
+
+
+def _normalize_group_name(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return "-".join(value.strip().lower().replace("_", "-").split())
 
 
 def _client_ip(request: Request) -> str | None:

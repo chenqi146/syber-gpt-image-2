@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Activity, Database, Server, UserCircle } from 'lucide-react';
 import { AccountInfo, formatBalance, formatDate, getAccount } from '../api';
 import { useAuth } from '../auth';
+import AvatarBadge from '../components/AvatarBadge';
 
 export default function Account() {
   const { viewer } = useAuth();
@@ -28,13 +29,35 @@ export default function Account() {
           <h2 className="text-primary mb-6 uppercase flex items-center gap-2 font-bold tracking-wider text-xs">
             <UserCircle size={18} /> Identity
           </h2>
+          <div className="mb-6 flex items-center gap-4">
+            <AvatarBadge
+              className="w-16 h-16"
+              textClassName="text-lg"
+              name={account?.user.username || account?.user.name}
+              email={account?.user.email}
+              guestId={account?.viewer.guest_id}
+            />
+            <div className="min-w-0">
+              <div className="text-lg text-white font-bold truncate">{account?.user.username || account?.user.name || 'Guest'}</div>
+              <div className="text-xs text-white/45 break-all">{account?.user.email || account?.viewer.owner_id || '--'}</div>
+            </div>
+          </div>
           <div className="space-y-4 text-sm">
             <Row label="OWNER" value={account?.user.authenticated ? 'REGISTERED USER' : 'GUEST SESSION'} />
             <Row label="USER" value={account?.user.name || '--'} />
+            <Row label="SUB2API USERNAME" value={account?.user.username || '--'} />
             <Row label="EMAIL" value={account?.user.email || '--'} />
             <Row label="MODEL" value={account?.user.model || 'gpt-image-2'} />
-            <Row label="API KEY" value={account?.user.api_key_set ? (account?.user.api_key_source === 'managed' ? 'BOUND TO SUB2API USER' : 'MANUAL GUEST KEY') : 'MISSING'} />
-            <Row label="BASE URL" value={account?.user.base_url || 'http://127.0.0.1:9878/v1'} />
+            <Row
+              label="API KEY"
+              value={account?.user.api_key_set
+                ? account?.user.api_key_source === 'managed'
+                  ? 'BOUND TO SUB2API USER'
+                  : account?.user.api_key_source === 'manual_override'
+                    ? 'MANUAL OVERRIDE KEY'
+                    : 'MANUAL GUEST KEY'
+                : 'MISSING'}
+            />
           </div>
         </section>
 
