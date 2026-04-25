@@ -14,6 +14,8 @@ from .settings import DEFAULT_INSPIRATION_SOURCE_URLS, Settings
 
 LEGACY_OWNER_ID = "legacy:default"
 DEFAULT_SITE_LOCALE = "zh-CN"
+USER_GALLERY_SOURCE_URL = "joko-image://user-gallery"
+USER_GALLERY_SECTION = "用户作品"
 DEFAULT_ANNOUNCEMENT_TITLE = "欢迎来到 JokoAI 图像系统"
 DEFAULT_ANNOUNCEMENT_BODY = """欢迎使用 JokoAI 图像生态系统。
 
@@ -549,8 +551,14 @@ class Database:
     def get_history(self, owner_id: str, history_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM image_history WHERE owner_id = ? AND id = ?",
-                (owner_id, history_id),
+                """
+                SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at
+                FROM image_history h
+                LEFT JOIN inspiration_prompts p
+                    ON p.source_url = ? AND p.source_item_id = h.id
+                WHERE h.owner_id = ? AND h.id = ?
+                """,
+                (USER_GALLERY_SOURCE_URL, owner_id, history_id),
             ).fetchone()
         return _history_row(row) if row else None
 
@@ -562,27 +570,45 @@ class Database:
             if q.strip():
                 rows = conn.execute(
                     """
-                    SELECT * FROM image_history
-                    WHERE owner_id = ? AND lower(prompt) LIKE ?
-                    ORDER BY created_at DESC
+                    SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at
+                    FROM image_history h
+                    LEFT JOIN inspiration_prompts p
+                        ON p.source_url = ? AND p.source_item_id = h.id
+                    WHERE h.owner_id = ? AND lower(h.prompt) LIKE ?
+                    ORDER BY h.created_at DESC
                     LIMIT ? OFFSET ?
                     """,
-                    (owner_id, search, limit, offset),
+                    (USER_GALLERY_SOURCE_URL, owner_id, search, limit, offset),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     """
-                    SELECT * FROM image_history
-                    WHERE owner_id = ?
-                    ORDER BY created_at DESC
+                    SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at
+                    FROM image_history h
+                    LEFT JOIN inspiration_prompts p
+                        ON p.source_url = ? AND p.source_item_id = h.id
+                    WHERE h.owner_id = ?
+                    ORDER BY h.created_at DESC
                     LIMIT ? OFFSET ?
                     """,
-                    (owner_id, limit, offset),
+                    (USER_GALLERY_SOURCE_URL, owner_id, limit, offset),
                 ).fetchall()
         return [_history_row(row) for row in rows]
 
     def delete_history(self, owner_id: str, history_id: str) -> bool:
         with self.connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM inspiration_prompts
+                WHERE source_url = ?
+                  AND source_item_id = ?
+                  AND EXISTS (
+                    SELECT 1 FROM image_history
+                    WHERE owner_id = ? AND id = ?
+                  )
+                """,
+                (USER_GALLERY_SOURCE_URL, history_id, owner_id, history_id),
+            )
             result = conn.execute(
                 "DELETE FROM image_history WHERE owner_id = ? AND id = ?",
                 (owner_id, history_id),
@@ -709,16 +735,102 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT * FROM image_history
-                WHERE owner_id = ? AND id IN ({placeholders})
+                SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at
+                FROM image_history h
+                LEFT JOIN inspiration_prompts p
+                    ON p.source_url = ? AND p.source_item_id = h.id
+                WHERE h.owner_id = ? AND h.id IN ({placeholders})
                 """,
-                (owner_id, *history_ids),
+                (USER_GALLERY_SOURCE_URL, owner_id, *history_ids),
             ).fetchall()
         items: dict[str, dict[str, Any]] = {}
         for row in rows:
             record = _history_row(row)
             items[record["id"]] = record
         return [items[item_id] for item_id in history_ids if item_id in items]
+
+    def publish_history_as_inspiration(self, owner_id: str, history_id: str, author: str) -> dict[str, Any] | None:
+        now = utc_now()
+        with self.connect() as conn:
+            history = conn.execute(
+                "SELECT * FROM image_history WHERE owner_id = ? AND id = ?",
+                (owner_id, history_id),
+            ).fetchone()
+            if history is None:
+                return None
+            if history["status"] != "succeeded" or not history["image_url"]:
+                raise ValueError("Only successful history items with an image can be published")
+
+            record = {
+                "id": f"user-{history_id}",
+                "source_url": USER_GALLERY_SOURCE_URL,
+                "source_item_id": history_id,
+                "section": USER_GALLERY_SECTION,
+                "title": _inspiration_title_from_prompt(history["prompt"]),
+                "author": author,
+                "prompt": history["prompt"],
+                "image_url": history["image_url"],
+                "source_link": None,
+                "raw_json": _json_or_none(
+                    {
+                        "history_id": history_id,
+                        "owner_id": owner_id,
+                        "mode": history["mode"],
+                        "model": history["model"],
+                        "size": history["size"],
+                        "quality": history["quality"],
+                        "history_created_at": history["created_at"],
+                    }
+                ),
+                "synced_at": now,
+                "created_at": now,
+                "updated_at": now,
+            }
+            conn.execute(
+                """
+                INSERT INTO inspiration_prompts (
+                    id, source_url, source_item_id, section, title, author, prompt,
+                    image_url, source_link, raw_json, synced_at, created_at, updated_at
+                )
+                VALUES (
+                    :id, :source_url, :source_item_id, :section, :title, :author,
+                    :prompt, :image_url, :source_link, :raw_json, :synced_at,
+                    :created_at, :updated_at
+                )
+                ON CONFLICT(source_url, source_item_id) DO UPDATE SET
+                    section = excluded.section,
+                    title = excluded.title,
+                    author = excluded.author,
+                    prompt = excluded.prompt,
+                    image_url = excluded.image_url,
+                    source_link = excluded.source_link,
+                    raw_json = excluded.raw_json,
+                    synced_at = excluded.synced_at,
+                    updated_at = excluded.updated_at
+                """,
+                record,
+            )
+            row = conn.execute(
+                "SELECT * FROM inspiration_prompts WHERE source_url = ? AND source_item_id = ?",
+                (USER_GALLERY_SOURCE_URL, history_id),
+            ).fetchone()
+        return _inspiration_row(row) if row else None
+
+    def unpublish_history_inspiration(self, owner_id: str, history_id: str) -> bool:
+        with self.connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM inspiration_prompts
+                WHERE source_url = ?
+                  AND source_item_id = ?
+                  AND EXISTS (
+                    SELECT 1 FROM image_history
+                    WHERE owner_id = ? AND id = ?
+                  )
+                """,
+                (USER_GALLERY_SOURCE_URL, history_id, owner_id, history_id),
+            )
+            return result.rowcount > 0
 
     def fail_incomplete_tasks(self, message: str) -> int:
         now = utc_now()
@@ -1025,6 +1137,9 @@ def _history_row(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["usage"] = _json_load(data.pop("usage_json"))
     data["provider_response"] = _json_load(data.pop("provider_response_json"))
+    data["published_inspiration_id"] = data.get("published_inspiration_id")
+    data["published_at"] = data.get("published_at")
+    data["published"] = bool(data["published_inspiration_id"])
     return data
 
 
@@ -1046,6 +1161,13 @@ def _inspiration_row(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["raw"] = _json_load(data.pop("raw_json"))
     return data
+
+
+def _inspiration_title_from_prompt(prompt: str) -> str:
+    compact = " ".join(prompt.split())
+    if len(compact) <= 48:
+        return compact or "用户作品"
+    return f"{compact[:48].rstrip()}..."
 
 
 def _site_settings_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:

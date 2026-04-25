@@ -44,6 +44,9 @@ export type HistoryItem = {
   usage: Record<string, unknown> | null;
   provider_response: Record<string, unknown> | null;
   error: string | null;
+  published: boolean;
+  published_inspiration_id: string | null;
+  published_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -322,6 +325,16 @@ export function syncInspirations() {
 
 export function deleteHistory(id: string) {
   return request<{ ok: boolean }>(`/api/history/${id}`, { method: 'DELETE' });
+}
+
+export function publishHistory(id: string) {
+  return request<{ ok: boolean; item: HistoryItem; inspiration: InspirationItem }>(`/api/history/${id}/publish`, {
+    method: 'POST',
+  });
+}
+
+export function unpublishHistory(id: string) {
+  return request<{ ok: boolean; item: HistoryItem }>(`/api/history/${id}/publish`, { method: 'DELETE' });
 }
 
 export function generateImage(payload: GeneratePayload) {

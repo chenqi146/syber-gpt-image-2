@@ -498,6 +498,39 @@ def create_app(
             raise HTTPException(status_code=404, detail="History item not found")
         return {"ok": True}
 
+    @app.post("/api/history/{history_id}/publish")
+    async def publish_history(
+        history_id: str,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+    ) -> dict[str, Any]:
+        try:
+            inspiration = db.publish_history_as_inspiration(
+                viewer.owner_id,
+                history_id,
+                author=_viewer_name(viewer, settings),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if inspiration is None:
+            raise HTTPException(status_code=404, detail="History item not found")
+        item = db.get_history(viewer.owner_id, history_id)
+        return {"ok": True, "item": item, "inspiration": inspiration}
+
+    @app.delete("/api/history/{history_id}/publish")
+    async def unpublish_history(
+        history_id: str,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+    ) -> dict[str, Any]:
+        history_item = db.get_history(viewer.owner_id, history_id)
+        if history_item is None:
+            raise HTTPException(status_code=404, detail="History item not found")
+        db.unpublish_history_inspiration(viewer.owner_id, history_id)
+        item = db.get_history(viewer.owner_id, history_id)
+        return {"ok": True, "item": item}
+
     @app.get("/api/tasks/{task_id}")
     async def image_task_status(
         task_id: str,

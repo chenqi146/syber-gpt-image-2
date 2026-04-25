@@ -211,6 +211,34 @@ def test_account_includes_balance_and_stats(tmp_path: Path) -> None:
         assert data["viewer"]["authenticated"] is False
 
 
+def test_user_can_publish_and_unpublish_history_as_public_case(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        client.put("/api/config", json={"api_key": "sk-test-123456"})
+        generated = client.post("/api/images/generate", json={"prompt": "public neon gallery"})
+        task = wait_for_task(client, generated.json()["id"])
+        history_id = task["items"][0]["id"]
+
+        history_before = client.get("/api/history").json()["items"][0]
+        assert history_before["published"] is False
+
+        published = client.post(f"/api/history/{history_id}/publish")
+        assert published.status_code == 200
+        published_data = published.json()
+        assert published_data["item"]["published"] is True
+        assert published_data["inspiration"]["section"] == "用户作品"
+        assert published_data["inspiration"]["prompt"] == "public neon gallery"
+
+        public_cases = client.get("/api/inspirations?q=public%20neon").json()["items"]
+        assert len(public_cases) == 1
+        assert public_cases[0]["source_url"] == "joko-image://user-gallery"
+
+        unpublished = client.delete(f"/api/history/{history_id}/publish")
+        assert unpublished.status_code == 200
+        assert unpublished.json()["item"]["published"] is False
+        public_cases_after = client.get("/api/inspirations?q=public%20neon").json()["items"]
+        assert public_cases_after == []
+
+
 def test_login_binds_managed_key_and_merges_guest_history(tmp_path: Path) -> None:
     auth = FakeAuthClient()
     with make_client(tmp_path, auth_client=auth) as client:

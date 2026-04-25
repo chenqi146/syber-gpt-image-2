@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Search, Filter, Download, Trash2, RefreshCw, ArrowDown, Loader2, Maximize2 } from 'lucide-react';
-import { deleteHistory, formatDate, generateImage, getHistory, HistoryItem } from '../api';
+import { Search, Filter, Download, Trash2, RefreshCw, ArrowDown, Loader2, Maximize2, Globe2 } from 'lucide-react';
+import { deleteHistory, formatDate, generateImage, getHistory, HistoryItem, publishHistory, unpublishHistory } from '../api';
 import { useAuth } from '../auth';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import MasonryGrid from '../components/MasonryGrid';
@@ -45,6 +45,7 @@ export default function History() {
   const [query, setQuery] = useState('');
   const [offset, setOffset] = useState(0);
   const [previewItem, setPreviewItem] = useState<HistoryItem | null>(null);
+  const [publishingIds, setPublishingIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -86,6 +87,32 @@ export default function History() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+    }
+  }
+
+  function replaceHistoryItem(nextItem: HistoryItem) {
+    setItems((current) => {
+      const exists = current.some((item) => item.id === nextItem.id);
+      if (!exists) {
+        return [nextItem, ...current];
+      }
+      return current.map((item) => (item.id === nextItem.id ? nextItem : item));
+    });
+  }
+
+  async function handleTogglePublish(item: HistoryItem) {
+    if (item.status !== 'succeeded' || !item.image_url) {
+      return;
+    }
+    setError('');
+    setPublishingIds((current) => (current.includes(item.id) ? current : [...current, item.id]));
+    try {
+      const result = item.published ? await unpublishHistory(item.id) : await publishHistory(item.id);
+      replaceHistoryItem(result.item);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPublishingIds((current) => current.filter((id) => id !== item.id));
     }
   }
 
@@ -156,10 +183,24 @@ export default function History() {
                 <span className={colors.textId}>ID:{item.id.slice(0, 4).toUpperCase()}</span>
                 <span>{formatDate(item.created_at)}</span>
                 <span>{item.size}</span>
+                {item.published ? <span className="text-tertiary">{t('history_published')}</span> : null}
               </div>
               <p className={`mb-3 line-clamp-3 text-sm ${colors.textId} transition-colors`}>
                 {item.prompt}
               </p>
+              <button
+                className={`mb-2 flex h-10 w-full items-center justify-center gap-2 border px-3 text-xs font-black uppercase transition-all duration-300 disabled:cursor-not-allowed disabled:opacity-40 ${
+                  item.published
+                    ? 'border-tertiary/40 bg-tertiary/10 text-tertiary hover:bg-tertiary/20'
+                    : 'border-primary/30 bg-primary/10 text-primary hover:border-primary hover:bg-primary/20'
+                }`}
+                type="button"
+                onClick={() => handleTogglePublish(item)}
+                disabled={publishingIds.includes(item.id) || item.status !== 'succeeded' || !item.image_url}
+              >
+                {publishingIds.includes(item.id) ? <Loader2 className="animate-spin" size={14} /> : <Globe2 size={14} />}
+                {item.published ? t('history_unpublish_case') : t('history_publish_case')}
+              </button>
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-[44px_44px_44px_1fr]">
                 <button
                   className="flex h-10 items-center justify-center border border-white/20 bg-white/5 text-white transition-all hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
