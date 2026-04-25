@@ -87,6 +87,8 @@ export type InspirationStats = {
   sections: number;
   section_counts: { section: string; count: number }[];
   source_url: string;
+  source_urls: string[];
+  source_counts: { source_url: string; count: number; last_synced_at: string | null }[];
   sync_interval_seconds: number;
   last_error: string | null;
 };
@@ -162,6 +164,7 @@ export type SiteSettings = {
     body: string;
     updated_at: string | null;
   };
+  inspiration_sources: string[];
   viewer: {
     authenticated: boolean;
     is_admin: boolean;
@@ -207,6 +210,7 @@ export function updateSiteSettings(payload: {
   announcement_enabled?: boolean;
   announcement_title?: string;
   announcement_body?: string;
+  inspiration_sources?: string[];
 }) {
   return request<SiteSettings>('/api/site-settings', {
     method: 'PUT',
@@ -311,7 +315,7 @@ export function getInspirationStats() {
 }
 
 export function syncInspirations() {
-  return request<{ ok: boolean; parsed: number; count: number; synced_at: string }>('/api/inspirations/sync', {
+  return request<{ ok: boolean; parsed: number; count: number; synced_at: string; source_urls: string[] }>('/api/inspirations/sync', {
     method: 'POST',
   });
 }

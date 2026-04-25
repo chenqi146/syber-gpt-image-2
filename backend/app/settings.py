@@ -4,6 +4,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+DEFAULT_INSPIRATION_SOURCE_URLS = [
+    "https://raw.githubusercontent.com/EvoLinkAI/awesome-gpt-image-2-prompts/main/README.md",
+    "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-gpt-image-2/main/README.md",
+]
+
 
 def _env_path(name: str, default: Path) -> Path:
     value = os.getenv(name)
@@ -15,6 +20,10 @@ def _derive_auth_base_url(provider_base_url: str) -> str:
     if base_url.endswith("/v1"):
         return base_url[:-3]
     return base_url
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 @dataclass(frozen=True)
@@ -39,6 +48,7 @@ class Settings:
     session_ttl_seconds: int
     guest_ttl_seconds: int
     cookie_secure: bool
+    inspiration_source_urls: list[str] | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -52,6 +62,14 @@ class Settings:
             ).split(",")
             if origin.strip()
         ]
+        source_urls = _split_csv(
+            os.getenv(
+                "INSPIRATION_SOURCE_URLS",
+                os.getenv("INSPIRATION_SOURCE_URL", ",".join(DEFAULT_INSPIRATION_SOURCE_URLS)),
+            )
+        )
+        if not source_urls:
+            source_urls = DEFAULT_INSPIRATION_SOURCE_URLS
         return cls(
             backend_dir=backend_dir,
             database_path=_env_path("DATABASE_PATH", backend_dir / "data" / "app.sqlite3"),
@@ -65,10 +83,7 @@ class Settings:
             user_name=os.getenv("APP_USER_NAME", "NEON_USER_404"),
             cors_origins=cors_origins,
             request_timeout_seconds=float(os.getenv("PROVIDER_TIMEOUT_SECONDS", "300")),
-            inspiration_source_url=os.getenv(
-                "INSPIRATION_SOURCE_URL",
-                "https://raw.githubusercontent.com/EvoLinkAI/awesome-gpt-image-2-prompts/main/README.md",
-            ),
+            inspiration_source_url=source_urls[0],
             inspiration_sync_interval_seconds=float(os.getenv("INSPIRATION_SYNC_INTERVAL_SECONDS", "21600")),
             inspiration_sync_on_startup=os.getenv("INSPIRATION_SYNC_ON_STARTUP", "true").lower()
             not in {"0", "false", "no", "off"},
@@ -77,6 +92,7 @@ class Settings:
             session_ttl_seconds=int(os.getenv("SESSION_TTL_SECONDS", str(30 * 24 * 60 * 60))),
             guest_ttl_seconds=int(os.getenv("GUEST_TTL_SECONDS", str(365 * 24 * 60 * 60))),
             cookie_secure=os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"},
+            inspiration_source_urls=source_urls,
         )
 
     @property

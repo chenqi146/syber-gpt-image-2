@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
-from .settings import Settings
+from .settings import DEFAULT_INSPIRATION_SOURCE_URLS, Settings
 
 
 LEGACY_OWNER_ID = "legacy:default"
@@ -25,6 +25,14 @@ Telegram：https://t.me/jokoacoount
 https://ai.get-money.locker
 
 如需充值、额度支持或账号协助，请通过以上方式联系。"""
+
+
+def default_inspiration_sources(settings: Settings | None = None) -> list[str]:
+    if settings and settings.inspiration_source_urls:
+        return settings.inspiration_source_urls
+    if settings and settings.inspiration_source_url:
+        return [settings.inspiration_source_url]
+    return list(DEFAULT_INSPIRATION_SOURCE_URLS)
 
 
 def utc_now() -> str:
@@ -145,6 +153,7 @@ class Database:
                     announcement_title TEXT NOT NULL DEFAULT '',
                     announcement_body TEXT NOT NULL DEFAULT '',
                     announcement_updated_at TEXT,
+                    inspiration_sources_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -204,7 +213,11 @@ class Database:
                 f"ALTER TABLE ledger_entries ADD COLUMN owner_id TEXT NOT NULL DEFAULT '{LEGACY_OWNER_ID}'"
             )
 
-        self._ensure_site_settings(conn)
+        site_settings_columns = _table_columns(conn, "site_settings")
+        if "inspiration_sources_json" not in site_settings_columns:
+            conn.execute("ALTER TABLE site_settings ADD COLUMN inspiration_sources_json TEXT NOT NULL DEFAULT '[]'")
+
+        self._ensure_site_settings(conn, settings)
 
         if self._owner_config_exists(conn, LEGACY_OWNER_ID):
             return
@@ -235,19 +248,29 @@ class Database:
             },
         )
 
-    def _ensure_site_settings(self, conn: sqlite3.Connection) -> None:
+    def _ensure_site_settings(self, conn: sqlite3.Connection, settings: Settings | None = None) -> None:
         row = conn.execute("SELECT * FROM site_settings WHERE id = 1").fetchone()
         now = utc_now()
+        sources_json = _json_or_none(default_inspiration_sources(settings))
         if row is None:
             conn.execute(
                 """
                 INSERT INTO site_settings (
                     id, default_locale, announcement_enabled, announcement_title,
-                    announcement_body, announcement_updated_at, created_at, updated_at
+                    announcement_body, announcement_updated_at, inspiration_sources_json,
+                    created_at, updated_at
                 )
-                VALUES (1, ?, 1, ?, ?, ?, ?, ?)
+                VALUES (1, ?, 1, ?, ?, ?, ?, ?, ?)
                 """,
-                (DEFAULT_SITE_LOCALE, DEFAULT_ANNOUNCEMENT_TITLE, DEFAULT_ANNOUNCEMENT_BODY, now, now, now),
+                (
+                    DEFAULT_SITE_LOCALE,
+                    DEFAULT_ANNOUNCEMENT_TITLE,
+                    DEFAULT_ANNOUNCEMENT_BODY,
+                    now,
+                    sources_json,
+                    now,
+                    now,
+                ),
             )
             return
 
@@ -265,6 +288,8 @@ class Database:
             updates["announcement_title"] = DEFAULT_ANNOUNCEMENT_TITLE
             updates["announcement_body"] = DEFAULT_ANNOUNCEMENT_BODY
             updates["announcement_updated_at"] = now
+        if not _json_load(row["inspiration_sources_json"]):
+            updates["inspiration_sources_json"] = sources_json
         if updates:
             updates["updated_at"] = now
             assignments = ", ".join(f"{key} = ?" for key in updates)
@@ -376,7 +401,13 @@ class Database:
             "announcement_title",
             "announcement_body",
             "announcement_updated_at",
+            "inspiration_sources_json",
         }
+        if "inspiration_sources" in payload:
+            payload = {
+                **payload,
+                "inspiration_sources_json": _json_or_none(payload.get("inspiration_sources") or []),
+            }
         updates = {key: value for key, value in payload.items() if key in allowed and value is not None}
         if not updates:
             return self.get_site_settings()
@@ -904,7 +935,7 @@ class Database:
                 f"""
                 SELECT * FROM inspiration_prompts
                 {where}
-                ORDER BY synced_at DESC, section ASC, title ASC
+                ORDER BY created_at DESC, synced_at DESC, section ASC, title ASC
                 LIMIT ? OFFSET ?
                 """,
                 (*params, limit, offset),
@@ -930,11 +961,27 @@ class Database:
                 ORDER BY section ASC
                 """
             ).fetchall()
+            source_rows = conn.execute(
+                """
+                SELECT source_url, COUNT(*) AS count, MAX(synced_at) AS last_synced_at
+                FROM inspiration_prompts
+                GROUP BY source_url
+                ORDER BY last_synced_at DESC, source_url ASC
+                """
+            ).fetchall()
         return {
             "total": int(row["total"] or 0),
             "last_synced_at": row["last_synced_at"],
             "sections": int(row["sections"] or 0),
             "section_counts": [{"section": item["section"], "count": int(item["count"])} for item in section_rows],
+            "source_counts": [
+                {
+                    "source_url": item["source_url"],
+                    "count": int(item["count"] or 0),
+                    "last_synced_at": item["last_synced_at"],
+                }
+                for item in source_rows
+            ],
         }
 
 
@@ -1002,7 +1049,9 @@ def _inspiration_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _site_settings_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    return dict(row)
+    data = dict(row)
+    data["inspiration_sources"] = _json_load(data.pop("inspiration_sources_json", None)) or []
+    return data
 
 
 def _config_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:

@@ -40,11 +40,13 @@ export default function Config() {
     announcement_enabled: boolean;
     announcement_title: string;
     announcement_body: string;
+    inspiration_sources: string;
   }>({
     default_locale: 'zh-CN',
     announcement_enabled: false,
     announcement_title: '',
     announcement_body: '',
+    inspiration_sources: '',
   });
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -77,12 +79,14 @@ export default function Config() {
       announcement_enabled: siteSettings.announcement.enabled,
       announcement_title: siteSettings.announcement.title,
       announcement_body: siteSettings.announcement.body,
+      inspiration_sources: (siteSettings.inspiration_sources || []).join('\n'),
     });
   }, [
     siteSettings?.default_locale,
     siteSettings?.announcement.enabled,
     siteSettings?.announcement.title,
     siteSettings?.announcement.body,
+    siteSettings?.inspiration_sources,
   ]);
 
   async function handleSubmit(event: FormEvent) {
@@ -168,6 +172,10 @@ export default function Config() {
         announcement_enabled: siteDraft.announcement_enabled,
         announcement_title: siteDraft.announcement_title.trim(),
         announcement_body: siteDraft.announcement_body.trim(),
+        inspiration_sources: siteDraft.inspiration_sources
+          .split('\n')
+          .map((item) => item.trim())
+          .filter(Boolean),
       });
       setLocale(normalizeLocale(updated.default_locale));
       await refreshSiteSettings();
@@ -259,19 +267,61 @@ export default function Config() {
             </div>
           </div>
 
-          <div className="bg-secondary/5 border border-secondary/20 p-4 mb-8 text-xs text-white/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <div className="text-secondary uppercase tracking-widest text-[10px] mb-1">{t('config_cases')}</div>
-              <div>{t('config_cases_summary', { total: inspirationStats?.total ?? 0, time: formatDate(inspirationStats?.last_synced_at) })}</div>
+          <div className="bg-secondary/5 border border-secondary/20 p-4 mb-8 text-xs text-white/50 flex flex-col gap-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-secondary uppercase tracking-widest text-[10px] mb-1">{t('config_cases')}</div>
+                <div>{t('config_cases_summary', { total: inspirationStats?.total ?? 0, time: formatDate(inspirationStats?.last_synced_at) })}</div>
+                <div className="mt-1 text-[10px] uppercase tracking-widest text-white/30">
+                  {t('config_cases_sources', { value: inspirationStats?.source_urls?.length || 0 })}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                {siteSettings?.viewer.is_admin ? (
+                  <button
+                    className="border border-primary/40 text-primary px-4 py-2 uppercase tracking-widest hover:bg-primary/10 transition-colors disabled:opacity-50"
+                    type="button"
+                    onClick={handleSaveSiteSettings}
+                    disabled={siteSaving}
+                  >
+                    {siteSaving ? <Loader2 className="inline animate-spin mr-2" size={13} /> : null}
+                    {t('config_save_case_sources')}
+                  </button>
+                ) : null}
+                <button
+                  className="border border-secondary/40 text-secondary px-4 py-2 uppercase tracking-widest hover:bg-secondary/10 transition-colors disabled:opacity-50"
+                  type="button"
+                  onClick={handleSyncInspirations}
+                  disabled={saving}
+                >
+                  {t('config_sync_cases')}
+                </button>
+              </div>
             </div>
-            <button
-              className="border border-secondary/40 text-secondary px-4 py-2 uppercase tracking-widest hover:bg-secondary/10 transition-colors disabled:opacity-50"
-              type="button"
-              onClick={handleSyncInspirations}
-              disabled={saving}
-            >
-              {t('config_sync_cases')}
-            </button>
+
+            <div className="border-t border-secondary/10 pt-4">
+              <Field label={t('site_inspiration_sources_body')}>
+                <textarea
+                  className="input-cyber min-h-28 resize-y"
+                  disabled={!siteSettings?.viewer.is_admin}
+                  value={siteDraft.inspiration_sources}
+                  onChange={(event) => setSiteDraft((current) => ({ ...current, inspiration_sources: event.target.value }))}
+                />
+              </Field>
+              {!siteSettings?.viewer.is_admin ? (
+                <div className="mt-2 text-[10px] uppercase tracking-widest text-white/30">{t('site_admin_only')}</div>
+              ) : null}
+              {inspirationStats?.source_counts?.length ? (
+                <div className="mt-4 grid grid-cols-1 gap-2 text-[10px] text-white/45 md:grid-cols-2">
+                  {inspirationStats.source_counts.map((source) => (
+                    <div key={source.source_url} className="flex items-center justify-between gap-3 border border-white/5 bg-black/20 px-3 py-2">
+                      <span className="min-w-0 truncate">{source.source_url}</span>
+                      <span className="shrink-0 text-primary">{source.count}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </div>
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-6">

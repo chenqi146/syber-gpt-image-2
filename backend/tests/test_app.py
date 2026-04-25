@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from app.inspirations import parse_inspiration_markdown
+from app.inspirations import normalize_inspiration_source_url, parse_inspiration_markdown
 from app.main import create_app, _auth_client, _db, _provider, _settings
 from app.settings import Settings
 
@@ -271,6 +271,7 @@ def test_site_settings_default_to_chinese(tmp_path: Path) -> None:
         assert data["announcement"]["enabled"] is True
         assert "JokoAI" in data["announcement"]["title"]
         assert "https://ai.get-money.locker" in data["announcement"]["body"]
+        assert data["inspiration_sources"] == ["https://example.com/README.md"]
 
 
 def test_admin_can_update_site_settings(tmp_path: Path) -> None:
@@ -285,6 +286,10 @@ def test_admin_can_update_site_settings(tmp_path: Path) -> None:
                 "announcement_enabled": True,
                 "announcement_title": "系统维护通知",
                 "announcement_body": "今晚 23:00 会进行维护。",
+                "inspiration_sources": [
+                    "https://github.com/YouMind-OpenLab/awesome-gpt-image-2",
+                    "https://raw.githubusercontent.com/EvoLinkAI/awesome-gpt-image-2-prompts/main/README.md",
+                ],
             },
         )
 
@@ -293,6 +298,7 @@ def test_admin_can_update_site_settings(tmp_path: Path) -> None:
         assert data["default_locale"] == "en-US"
         assert data["announcement"]["enabled"] is True
         assert data["announcement"]["title"] == "系统维护通知"
+        assert data["inspiration_sources"][0] == "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-gpt-image-2/main/README.md"
 
 
 def test_parse_inspiration_markdown() -> None:
@@ -323,6 +329,65 @@ def test_parse_inspiration_markdown() -> None:
     assert items[0]["source_link"] == "https://x.com/demo/status/1"
     assert items[0]["image_url"].endswith("/images/portrait_case1/output.jpg")
     assert "35mm film" in items[0]["prompt"]
+
+
+def test_parse_youmind_inspiration_markdown() -> None:
+    markdown = """
+## 🔥 Featured Prompts
+
+### No. 1: VR Headset Exploded View Poster
+
+#### 📖 Description
+
+Generates a high-tech exploded view diagram.
+
+#### 📝 Prompt
+
+```
+{
+  "type": "exploded view product diagram poster",
+  "subject": "VR headset"
+}
+```
+
+#### 🖼️ Generated Images
+
+##### Image 1
+
+<div align="center">
+<img src="https://cms-assets.youmind.com/media/demo.jpg" width="700" alt="VR Headset Exploded View Poster - Image 1">
+</div>
+
+#### 📌 Details
+
+- **Author:** [wory](https://x.com/wory37303852)
+- **Source:** [Twitter Post](https://x.com/wory37303852/status/2045925660401795478)
+"""
+    items = parse_inspiration_markdown(
+        markdown,
+        "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-gpt-image-2/main/README.md",
+    )
+
+    assert len(items) == 1
+    assert items[0]["section"] == "🔥 Featured Prompts"
+    assert items[0]["title"] == "VR Headset Exploded View Poster"
+    assert items[0]["author"] == "wory"
+    assert items[0]["source_link"] == "https://x.com/wory37303852/status/2045925660401795478"
+    assert items[0]["image_url"] == "https://cms-assets.youmind.com/media/demo.jpg"
+    assert "exploded view product" in items[0]["prompt"]
+
+
+def test_normalize_github_inspiration_source_url() -> None:
+    assert (
+        normalize_inspiration_source_url("https://github.com/YouMind-OpenLab/awesome-gpt-image-2")
+        == "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-gpt-image-2/main/README.md"
+    )
+    assert (
+        normalize_inspiration_source_url(
+            "https://github.com/YouMind-OpenLab/awesome-gpt-image-2/blob/main/README_zh.md"
+        )
+        == "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-gpt-image-2/main/README_zh.md"
+    )
 
 
 def test_manual_inspiration_sync_endpoint(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .auth_client import Sub2APIAuthClient
 from .db import Database, utc_now
-from .inspirations import run_inspiration_sync_loop, sync_inspirations
+from .inspirations import normalize_inspiration_source_urls, run_inspiration_sync_loop, sync_inspirations
 from .provider import OpenAICompatibleImageClient, ProviderError
 from .settings import Settings
 from .storage import save_provider_image, save_upload
@@ -71,6 +71,7 @@ class SiteSettingsUpdate(BaseModel):
     announcement_enabled: bool | None = None
     announcement_title: str | None = Field(default=None, max_length=120)
     announcement_body: str | None = Field(default=None, max_length=12000)
+    inspiration_sources: list[str] | None = None
 
 
 @dataclass
@@ -228,7 +229,13 @@ def create_app(
         db: Database = Depends(_db),
     ) -> dict[str, Any]:
         _require_admin(viewer)
-        return _public_site_settings(db.update_site_settings(payload.model_dump(exclude_none=True)), viewer)
+        updates = payload.model_dump(exclude_none=True)
+        if "inspiration_sources" in updates:
+            sources = normalize_inspiration_source_urls(updates["inspiration_sources"])
+            if not sources:
+                raise HTTPException(status_code=400, detail="At least one case source is required")
+            updates["inspiration_sources"] = sources
+        return _public_site_settings(db.update_site_settings(updates), viewer)
 
     @app.post("/api/auth/send-verify-code")
     async def auth_send_verify_code(
@@ -445,9 +452,11 @@ def create_app(
 
     @app.get("/api/inspirations/stats")
     async def inspiration_stats(db: Database = Depends(_db)) -> dict[str, Any]:
+        sources = db.get_site_settings().get("inspiration_sources") or [settings.inspiration_source_url]
         return {
             **db.inspiration_stats(),
-            "source_url": settings.inspiration_source_url,
+            "source_url": sources[0] if sources else settings.inspiration_source_url,
+            "source_urls": sources,
             "sync_interval_seconds": settings.inspiration_sync_interval_seconds,
             "last_sync": app.state.last_inspiration_sync,
             "last_error": app.state.last_inspiration_sync_error,
@@ -639,6 +648,7 @@ def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext) 
             "body": settings_data["announcement_body"],
             "updated_at": settings_data["announcement_updated_at"],
         },
+        "inspiration_sources": settings_data.get("inspiration_sources") or [],
         "viewer": {
             "authenticated": viewer.authenticated,
             "is_admin": viewer.is_admin,
