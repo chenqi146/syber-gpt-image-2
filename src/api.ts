@@ -171,6 +171,12 @@ export type SiteSettings = {
     updated_at: string | null;
   };
   inspiration_sources: string[];
+  upstream?: {
+    provider_base_url: string;
+    auth_base_url: string;
+    effective_provider_base_url: string;
+    effective_auth_base_url: string;
+  };
   viewer: {
     authenticated: boolean;
     is_admin: boolean;
@@ -217,6 +223,8 @@ export function updateSiteSettings(payload: {
   announcement_title?: string;
   announcement_body?: string;
   inspiration_sources?: string[];
+  provider_base_url?: string;
+  auth_base_url?: string;
 }) {
   return request<SiteSettings>('/api/site-settings', {
     method: 'PUT',

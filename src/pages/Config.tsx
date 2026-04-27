@@ -41,12 +41,16 @@ export default function Config() {
     announcement_title: string;
     announcement_body: string;
     inspiration_sources: string;
+    provider_base_url: string;
+    auth_base_url: string;
   }>({
     default_locale: 'zh-CN',
     announcement_enabled: false,
     announcement_title: '',
     announcement_body: '',
     inspiration_sources: '',
+    provider_base_url: '',
+    auth_base_url: '',
   });
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -80,6 +84,8 @@ export default function Config() {
       announcement_title: siteSettings.announcement.title,
       announcement_body: siteSettings.announcement.body,
       inspiration_sources: (siteSettings.inspiration_sources || []).join('\n'),
+      provider_base_url: siteSettings.upstream?.provider_base_url || '',
+      auth_base_url: siteSettings.upstream?.auth_base_url || '',
     });
   }, [
     siteSettings?.default_locale,
@@ -87,6 +93,8 @@ export default function Config() {
     siteSettings?.announcement.title,
     siteSettings?.announcement.body,
     siteSettings?.inspiration_sources,
+    siteSettings?.upstream?.provider_base_url,
+    siteSettings?.upstream?.auth_base_url,
   ]);
 
   async function handleSubmit(event: FormEvent) {
@@ -172,6 +180,8 @@ export default function Config() {
         announcement_enabled: siteDraft.announcement_enabled,
         announcement_title: siteDraft.announcement_title.trim(),
         announcement_body: siteDraft.announcement_body.trim(),
+        provider_base_url: siteDraft.provider_base_url.trim(),
+        auth_base_url: siteDraft.auth_base_url.trim(),
         inspiration_sources: siteDraft.inspiration_sources
           .split('\n')
           .map((item) => item.trim())
@@ -439,6 +449,46 @@ export default function Config() {
                   <option value="en-US">{t('lang_en')}</option>
                 </select>
               </Field>
+
+              {siteSettings?.viewer.is_admin ? (
+                <div className="border border-primary/20 bg-primary/5 p-4">
+                  <div className="mb-3 flex items-center gap-2 text-[10px] uppercase tracking-widest text-primary">
+                    <PlugZap size={15} />
+                    {t('site_upstream')}
+                  </div>
+                  <p className="mb-4 text-xs leading-6 text-white/45">{t('site_upstream_hint')}</p>
+
+                  <div className="space-y-4">
+                    <Field label={t('site_provider_base_url')}>
+                      <>
+                        <input
+                          className="input-cyber"
+                          placeholder={siteSettings.upstream?.effective_provider_base_url || 'https://example.com/v1'}
+                          value={siteDraft.provider_base_url}
+                          onChange={(event) => setSiteDraft((current) => ({ ...current, provider_base_url: event.target.value }))}
+                        />
+                        <div className="mt-1 text-[9px] uppercase tracking-widest text-white/30">
+                          {t('site_upstream_effective', { value: siteSettings.upstream?.effective_provider_base_url || '-' })}
+                        </div>
+                      </>
+                    </Field>
+
+                    <Field label={t('site_auth_base_url')}>
+                      <>
+                        <input
+                          className="input-cyber"
+                          placeholder={siteSettings.upstream?.effective_auth_base_url || 'https://example.com'}
+                          value={siteDraft.auth_base_url}
+                          onChange={(event) => setSiteDraft((current) => ({ ...current, auth_base_url: event.target.value }))}
+                        />
+                        <div className="mt-1 text-[9px] uppercase tracking-widest text-white/30">
+                          {t('site_upstream_effective', { value: siteSettings.upstream?.effective_auth_base_url || '-' })}
+                        </div>
+                      </>
+                    </Field>
+                  </div>
+                </div>
+              ) : null}
 
               <div className="border border-secondary/20 bg-secondary/5 p-4">
                 <div className="mb-4 flex items-center gap-2 text-[10px] uppercase tracking-widest text-secondary">

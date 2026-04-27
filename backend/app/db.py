@@ -160,6 +160,8 @@ class Database:
                     announcement_body TEXT NOT NULL DEFAULT '',
                     announcement_updated_at TEXT,
                     inspiration_sources_json TEXT NOT NULL DEFAULT '[]',
+                    provider_base_url TEXT NOT NULL DEFAULT '',
+                    auth_base_url TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -232,6 +234,10 @@ class Database:
         site_settings_columns = _table_columns(conn, "site_settings")
         if "inspiration_sources_json" not in site_settings_columns:
             conn.execute("ALTER TABLE site_settings ADD COLUMN inspiration_sources_json TEXT NOT NULL DEFAULT '[]'")
+        if "provider_base_url" not in site_settings_columns:
+            conn.execute("ALTER TABLE site_settings ADD COLUMN provider_base_url TEXT NOT NULL DEFAULT ''")
+        if "auth_base_url" not in site_settings_columns:
+            conn.execute("ALTER TABLE site_settings ADD COLUMN auth_base_url TEXT NOT NULL DEFAULT ''")
 
         self._ensure_site_settings(conn, settings)
 
@@ -374,7 +380,11 @@ class Database:
                 row = conn.execute("SELECT * FROM owner_config WHERE owner_id = ?", (owner_id,)).fetchone()
             if row is None:
                 raise RuntimeError("owner_config was not initialized")
-            return _config_row(row)
+            config = _config_row(row)
+            site_row = conn.execute("SELECT provider_base_url FROM site_settings WHERE id = 1").fetchone()
+            provider_base_url = str(site_row["provider_base_url"] or "").strip() if site_row else ""
+            config["base_url"] = (provider_base_url or settings.provider_base_url).rstrip("/")
+            return config
 
     def update_config(self, owner_id: str, settings: Settings, payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {
@@ -418,6 +428,8 @@ class Database:
             "announcement_body",
             "announcement_updated_at",
             "inspiration_sources_json",
+            "provider_base_url",
+            "auth_base_url",
         }
         if "inspiration_sources" in payload:
             payload = {
@@ -446,13 +458,14 @@ class Database:
         *,
         api_key: str,
         user_name: str,
+        base_url: str | None = None,
     ) -> dict[str, Any]:
         current = self.get_config(owner_id, settings, user_name=user_name)
         manual_api_key = str(current.get("manual_api_key") or "")
         previous_managed_api_key = str(current.get("managed_api_key") or "")
         payload = {
             "managed_api_key": api_key,
-            "base_url": settings.provider_base_url,
+            "base_url": (base_url or settings.provider_base_url).rstrip("/"),
             "usage_path": settings.provider_usage_path,
             "model": current.get("model") or settings.image_model,
             "user_name": user_name,

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.inspirations import cache_inspiration_images, normalize_inspiration_source_url, parse_inspiration_markdown
 from app.main import create_app, _auth_client, _db, _image_size_tier, _provider, _provider_image_size, _settings
+from app.provider import ProviderError
 from app.settings import Settings
 
 
@@ -22,7 +23,9 @@ PNG_B64 = (
 
 class FakeProvider:
     def __init__(self) -> None:
+        self.generated_configs: list[dict[str, Any]] = []
         self.generated_payloads: list[dict[str, Any]] = []
+        self.edited_configs: list[dict[str, Any]] = []
         self.edited_fields: list[dict[str, Any]] = []
         self.edited_images: list[list[tuple[str, bytes, str]]] = []
 
@@ -35,6 +38,7 @@ class FakeProvider:
     async def generate_image(self, config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         await asyncio.sleep(0.02)
         assert payload["model"] == "gpt-image-2"
+        self.generated_configs.append(dict(config))
         self.generated_payloads.append(payload)
         return {"created": 123, "data": [{"b64_json": PNG_B64, "revised_prompt": "revised"}], "usage": {"total_tokens": 1}}
 
@@ -47,13 +51,38 @@ class FakeProvider:
     ) -> dict[str, Any]:
         await asyncio.sleep(0.02)
         assert images
+        self.edited_configs.append(dict(config))
         self.edited_fields.append(fields)
         self.edited_images.append(images)
         return {"created": 124, "data": [{"b64_json": PNG_B64}], "usage": {"total_tokens": 2}}
 
 
+class FlakyProvider(FakeProvider):
+    def __init__(self, generate_failures: int) -> None:
+        super().__init__()
+        self.generate_attempts = 0
+        self.generate_failures = generate_failures
+
+    async def generate_image(self, config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        self.generate_attempts += 1
+        if self.generate_attempts <= self.generate_failures:
+            raise ProviderError(
+                502,
+                "Upstream request failed",
+                {"error": {"message": "Upstream request failed", "type": "upstream_error"}},
+            )
+        return await super().generate_image(config, payload)
+
+
 class FakeAuthClient:
     def __init__(self) -> None:
+        self.public_settings_base_urls: list[str] = []
+        self.register_base_urls: list[str] = []
+        self.login_base_urls: list[str] = []
+        self.login_2fa_base_urls: list[str] = []
+        self.list_keys_base_urls: list[str] = []
+        self.create_key_base_urls: list[str] = []
+        self.list_usage_base_urls: list[str] = []
         self.created_keys: list[dict[str, Any]] = []
         self.usage_logs: list[dict[str, Any]] = [
             {
@@ -71,12 +100,14 @@ class FakeAuthClient:
         ]
 
     async def public_settings(self, base_url: str) -> dict[str, Any]:
+        self.public_settings_base_urls.append(base_url)
         return {"registration_enabled": True, "email_verify_enabled": False, "backend_mode_enabled": False, "site_name": "demo"}
 
     async def send_verify_code(self, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {"message": "sent", "countdown": 60}
 
     async def register(self, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.register_base_urls.append(base_url)
         return {
             "access_token": "access-demo",
             "refresh_token": "refresh-demo",
@@ -85,6 +116,7 @@ class FakeAuthClient:
         }
 
     async def login(self, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.login_base_urls.append(base_url)
         return {
             "access_token": "access-demo",
             "refresh_token": "refresh-demo",
@@ -93,6 +125,7 @@ class FakeAuthClient:
         }
 
     async def login_2fa(self, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.login_2fa_base_urls.append(base_url)
         return {
             "access_token": "access-demo",
             "refresh_token": "refresh-demo",
@@ -101,12 +134,14 @@ class FakeAuthClient:
         }
 
     async def list_keys(self, base_url: str, access_token: str) -> list[dict[str, Any]]:
+        self.list_keys_base_urls.append(base_url)
         return []
 
     async def list_available_groups(self, base_url: str, access_token: str) -> list[dict[str, Any]]:
         raise AssertionError("Direct Sub2API mode should not require a dedicated image group")
 
     async def create_key(self, base_url: str, access_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.create_key_base_urls.append(base_url)
         key = {
             "id": 99,
             "key": "sk-user-managed-123456",
@@ -118,10 +153,11 @@ class FakeAuthClient:
         return key
 
     async def list_usage(self, base_url: str, access_token: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        self.list_usage_base_urls.append(base_url)
         return list(self.usage_logs)
 
 
-def make_app(tmp_path: Path, auth_client: FakeAuthClient | None = None):
+def make_app(tmp_path: Path, auth_client: FakeAuthClient | None = None, provider: FakeProvider | None = None):
     settings = Settings(
         backend_dir=tmp_path,
         database_path=tmp_path / "data" / "app.sqlite3",
@@ -147,7 +183,7 @@ def make_app(tmp_path: Path, auth_client: FakeAuthClient | None = None):
         guest_ttl_seconds=86400,
         cookie_secure=False,
     )
-    app = create_app(settings=settings, provider=FakeProvider(), auth_client=auth_client or FakeAuthClient())
+    app = create_app(settings=settings, provider=provider or FakeProvider(), auth_client=auth_client or FakeAuthClient())
     app.dependency_overrides[_db] = lambda: app.state.db
     app.dependency_overrides[_settings] = lambda: app.state.settings
     app.dependency_overrides[_provider] = lambda: app.state.provider
@@ -155,8 +191,12 @@ def make_app(tmp_path: Path, auth_client: FakeAuthClient | None = None):
     return app
 
 
-def make_client(tmp_path: Path, auth_client: FakeAuthClient | None = None) -> TestClient:
-    return TestClient(make_app(tmp_path, auth_client=auth_client))
+def make_client(
+    tmp_path: Path,
+    auth_client: FakeAuthClient | None = None,
+    provider: FakeProvider | None = None,
+) -> TestClient:
+    return TestClient(make_app(tmp_path, auth_client=auth_client, provider=provider))
 
 
 def wait_for_task(client: TestClient, task_id: str, attempts: int = 60, delay: float = 0.02) -> dict[str, Any]:
@@ -226,6 +266,20 @@ def test_generation_passes_resolution_ratio_and_quality(tmp_path: Path) -> None:
         assert provider.generated_payloads[-1]["size"] == "2560x1440"
         assert "aspectRatio" not in provider.generated_payloads[-1]
         assert provider.generated_payloads[-1]["quality"] == "high"
+
+
+def test_generation_retries_retryable_upstream_errors(tmp_path: Path) -> None:
+    provider = FlakyProvider(generate_failures=2)
+    with make_client(tmp_path, provider=provider) as client:
+        client.put("/api/config", json={"api_key": "sk-test-123456"})
+
+        generated = client.post("/api/images/generate", json={"prompt": "retryable cup"})
+
+        assert generated.status_code == 200
+        task = wait_for_task(client, generated.json()["id"], attempts=120)
+        assert task["status"] == "succeeded"
+        assert provider.generate_attempts == 3
+        assert task["items"][0]["status"] == "succeeded"
 
 
 def test_generation_records_nonzero_ledger_amount(tmp_path: Path) -> None:
@@ -470,6 +524,54 @@ def test_admin_can_update_site_settings(tmp_path: Path) -> None:
         assert data["announcement"]["enabled"] is True
         assert data["announcement"]["title"] == "系统维护通知"
         assert data["inspiration_sources"][0] == "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-gpt-image-2/main/README.md"
+
+
+def test_admin_can_update_global_upstream_settings(tmp_path: Path) -> None:
+    auth = FakeAuthClient()
+    app = make_app(tmp_path, auth_client=auth)
+    provider = app.state.provider
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"email": "demo@example.com", "password": "secret123"})
+        assert login.status_code == 200
+
+        response = client.put(
+            "/api/site-settings",
+            json={
+                "provider_base_url": "https://image-upstream.example.com/v1/",
+                "auth_base_url": "https://auth-upstream.example.com/",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["upstream"]["provider_base_url"] == "https://image-upstream.example.com/v1"
+        assert data["upstream"]["auth_base_url"] == "https://auth-upstream.example.com"
+        assert data["upstream"]["effective_provider_base_url"] == "https://image-upstream.example.com/v1"
+        assert data["upstream"]["effective_auth_base_url"] == "https://auth-upstream.example.com"
+
+        public_settings = client.get("/api/auth/public-settings")
+        assert public_settings.status_code == 200
+        assert auth.public_settings_base_urls[-1] == "https://auth-upstream.example.com"
+
+        generated = client.post(
+            "/api/images/generate",
+            json={"prompt": "custom upstream", "size": "2K", "aspect_ratio": "1:1", "quality": "medium"},
+        )
+        assert generated.status_code == 200
+        wait_for_task(client, generated.json()["id"])
+
+        assert provider.generated_configs[-1]["base_url"] == "https://image-upstream.example.com/v1"
+        assert auth.list_usage_base_urls[-1] == "https://auth-upstream.example.com"
+
+
+def test_invalid_global_upstream_url_is_rejected(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        login = client.post("/api/auth/login", json={"email": "demo@example.com", "password": "secret123"})
+        assert login.status_code == 200
+
+        response = client.put("/api/site-settings", json={"provider_base_url": "not-a-url"})
+
+        assert response.status_code == 400
 
 
 def test_parse_inspiration_markdown() -> None:

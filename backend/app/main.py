@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -76,6 +77,9 @@ SIZE_TIER_BY_DIMENSION = {
     dimension.lower(): scale for scale, ratios in SIZE_PRESETS.items() for dimension in ratios.values()
 }
 
+RETRYABLE_PROVIDER_STATUS_CODES = {429, 502, 503, 504}
+IMAGE_PROVIDER_MAX_ATTEMPTS = 3
+
 
 class AuthSendVerifyCodeRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
@@ -108,6 +112,8 @@ class SiteSettingsUpdate(BaseModel):
     announcement_title: str | None = Field(default=None, max_length=120)
     announcement_body: str | None = Field(default=None, max_length=12000)
     inspiration_sources: list[str] | None = None
+    provider_base_url: str | None = None
+    auth_base_url: str | None = None
 
 
 @dataclass
@@ -201,10 +207,6 @@ def create_app(
     )
     app.mount("/storage", StaticFiles(directory=settings.storage_dir), name="storage")
 
-    @app.get("/api/health")
-    async def health() -> dict[str, str]:
-        return {"ok": "true"}
-
     @app.middleware("http")
     async def attach_viewer(request: Request, call_next):
         request.state.clear_session_cookie = False
@@ -233,20 +235,19 @@ def create_app(
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
         return {
-            "ok": True,
-            "sub2api_base_url": settings.provider_base_url,
-            "sub2api_auth_base_url": settings.auth_base_url,
-            "detected": {
-                "sub2api": "http://127.0.0.1:9878",
-            },
+            "ok": "true",
             "inspirations": db.inspiration_stats(),
             "last_inspiration_sync_error": app.state.last_inspiration_sync_error,
         }
 
     @app.get("/api/auth/public-settings")
-    async def auth_public_settings(auth_client: Sub2APIAuthClient = Depends(_auth_client)) -> dict[str, Any]:
+    async def auth_public_settings(
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        auth_client: Sub2APIAuthClient = Depends(_auth_client),
+    ) -> dict[str, Any]:
         try:
-            return await auth_client.public_settings(settings.auth_base_url)
+            return await auth_client.public_settings(_site_auth_base_url(db, settings))
         except ProviderError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -263,14 +264,16 @@ def create_app(
     async def get_site_settings(
         viewer: ViewerContext = Depends(_viewer),
         db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
     ) -> dict[str, Any]:
-        return _public_site_settings(db.get_site_settings(), viewer)
+        return _public_site_settings(db.get_site_settings(), viewer, settings)
 
     @app.put("/api/site-settings")
     async def update_site_settings(
         payload: SiteSettingsUpdate,
         viewer: ViewerContext = Depends(_viewer),
         db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
     ) -> dict[str, Any]:
         _require_admin(viewer)
         updates = payload.model_dump(exclude_none=True)
@@ -279,16 +282,21 @@ def create_app(
             if not sources:
                 raise HTTPException(status_code=400, detail="At least one case source is required")
             updates["inspiration_sources"] = sources
-        return _public_site_settings(db.update_site_settings(updates), viewer)
+        for key in ("provider_base_url", "auth_base_url"):
+            if key in updates:
+                updates[key] = _normalize_upstream_url(updates[key])
+        return _public_site_settings(db.update_site_settings(updates), viewer, settings)
 
     @app.post("/api/auth/send-verify-code")
     async def auth_send_verify_code(
         payload: AuthSendVerifyCodeRequest,
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
         auth_client: Sub2APIAuthClient = Depends(_auth_client),
     ) -> dict[str, Any]:
         try:
             body = payload.model_dump(exclude_none=True)
-            return await auth_client.send_verify_code(settings.auth_base_url, body)
+            return await auth_client.send_verify_code(_site_auth_base_url(db, settings), body)
         except ProviderError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -302,7 +310,7 @@ def create_app(
         auth_client: Sub2APIAuthClient = Depends(_auth_client),
     ) -> dict[str, Any]:
         try:
-            result = await auth_client.register(settings.auth_base_url, payload.model_dump(exclude_none=True))
+            result = await auth_client.register(_site_auth_base_url(db, settings), payload.model_dump(exclude_none=True))
             viewer_payload = await _complete_auth_flow(
                 db,
                 settings,
@@ -325,7 +333,7 @@ def create_app(
         auth_client: Sub2APIAuthClient = Depends(_auth_client),
     ) -> dict[str, Any]:
         try:
-            result = await auth_client.login(settings.auth_base_url, payload.model_dump(exclude_none=True))
+            result = await auth_client.login(_site_auth_base_url(db, settings), payload.model_dump(exclude_none=True))
             if isinstance(result, dict) and result.get("requires_2fa"):
                 return {
                     "ok": True,
@@ -355,7 +363,7 @@ def create_app(
         auth_client: Sub2APIAuthClient = Depends(_auth_client),
     ) -> dict[str, Any]:
         try:
-            result = await auth_client.login_2fa(settings.auth_base_url, payload.model_dump(exclude_none=True))
+            result = await auth_client.login_2fa(_site_auth_base_url(db, settings), payload.model_dump(exclude_none=True))
             viewer_payload = await _complete_auth_flow(
                 db,
                 settings,
@@ -719,8 +727,8 @@ def _require_admin(viewer: ViewerContext) -> None:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
-def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext) -> dict[str, Any]:
-    return {
+def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext, settings: Settings) -> dict[str, Any]:
+    payload = {
         "default_locale": settings_data["default_locale"],
         "announcement": {
             "enabled": bool(settings_data["announcement_enabled"]),
@@ -734,6 +742,40 @@ def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext) 
             "is_admin": viewer.is_admin,
         },
     }
+    if viewer.is_admin:
+        payload["upstream"] = {
+            "provider_base_url": str(settings_data.get("provider_base_url") or ""),
+            "auth_base_url": str(settings_data.get("auth_base_url") or ""),
+            "effective_provider_base_url": _effective_provider_base_url(settings_data, settings),
+            "effective_auth_base_url": _effective_auth_base_url(settings_data, settings),
+        }
+    return payload
+
+
+def _normalize_upstream_url(value: Any) -> str:
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Upstream URL must be a valid http:// or https:// URL")
+    return text
+
+
+def _effective_provider_base_url(settings_data: dict[str, Any], settings: Settings) -> str:
+    return str(settings_data.get("provider_base_url") or settings.provider_base_url).strip().rstrip("/")
+
+
+def _effective_auth_base_url(settings_data: dict[str, Any], settings: Settings) -> str:
+    return str(settings_data.get("auth_base_url") or settings.auth_base_url).strip().rstrip("/")
+
+
+def _site_auth_base_url(db: Database, settings: Settings) -> str:
+    return _effective_auth_base_url(db.get_site_settings(), settings)
+
+
+def _site_provider_base_url(db: Database, settings: Settings) -> str:
+    return _effective_provider_base_url(db.get_site_settings(), settings)
 
 
 def _public_config(config: dict[str, Any], viewer: ViewerContext) -> dict[str, Any]:
@@ -811,7 +853,9 @@ async def _complete_auth_flow(
     user_id = int(user["id"])
     owner_id = f"user:{user_id}"
     display_name = str(user.get("username") or user.get("email") or f"user-{user_id}")
-    api_key = await _resolve_user_api_key(auth_client, settings, access_token)
+    auth_base_url = _site_auth_base_url(db, settings)
+    provider_base_url = _site_provider_base_url(db, settings)
+    api_key = await _resolve_user_api_key(auth_client, auth_base_url, access_token)
 
     db.merge_owner_data(
         request.state.guest_owner_id,
@@ -819,7 +863,13 @@ async def _complete_auth_flow(
         settings,
         user_name=display_name,
     )
-    config = db.apply_managed_config(owner_id, settings, api_key=api_key, user_name=display_name)
+    config = db.apply_managed_config(
+        owner_id,
+        settings,
+        api_key=api_key,
+        user_name=display_name,
+        base_url=provider_base_url,
+    )
     session = db.create_session(
         owner_id=owner_id,
         sub2api_user_id=user_id,
@@ -851,16 +901,16 @@ async def _complete_auth_flow(
 
 async def _resolve_user_api_key(
     auth_client: Sub2APIAuthClient,
-    settings: Settings,
+    auth_base_url: str,
     access_token: str,
 ) -> str:
-    keys = await auth_client.list_keys(settings.auth_base_url, access_token)
+    keys = await auth_client.list_keys(auth_base_url, access_token)
     selected = _select_existing_key(keys)
     if selected and selected.get("key"):
         return str(selected["key"])
 
     payload: dict[str, Any] = {"name": "cybergen-image"}
-    created = await auth_client.create_key(settings.auth_base_url, access_token, payload)
+    created = await auth_client.create_key(auth_base_url, access_token, payload)
     key = str(created.get("key") or "").strip()
     if not key:
         raise HTTPException(status_code=502, detail="JokoAI did not return a usable API key")
@@ -1062,7 +1112,7 @@ async def _sub2api_actual_image_ledger_cost(
     }
     for attempt in range(5):
         try:
-            logs = await auth_client.list_usage(settings.auth_base_url, access_token, params)
+            logs = await auth_client.list_usage(_site_auth_base_url(db, settings), access_token, params)
         except ProviderError:
             return None
         usage_log = _select_sub2api_image_usage_log(logs, model)
@@ -1201,7 +1251,9 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
         if task["mode"] == "generate":
             if not isinstance(request_payload, dict):
                 raise ValueError("Generate task payload was missing")
-            provider_response = await provider.generate_image(config, request_payload)
+            provider_response = await _call_provider_with_retries(
+                lambda: provider.generate_image(config, request_payload)
+            )
         elif task["mode"] == "edit":
             if not isinstance(request_payload, dict):
                 raise ValueError("Edit task payload was missing")
@@ -1214,7 +1266,9 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
                 raise ValueError("Edit task is missing source images")
             saved_mask = request_payload.get("mask")
             mask_file = _load_saved_upload(saved_mask) if isinstance(saved_mask, dict) else None
-            provider_response = await provider.edit_image(config, fields, image_files, mask_file)
+            provider_response = await _call_provider_with_retries(
+                lambda: provider.edit_image(config, fields, image_files, mask_file)
+            )
         else:
             raise ValueError(f"Unsupported task mode: {task['mode']}")
 
@@ -1389,6 +1443,44 @@ async def _persist_image_response(
     if not records:
         raise ValueError("Provider response image data was empty")
     return records
+
+
+async def _call_provider_with_retries(operation) -> dict[str, Any]:
+    last_error: ProviderError | None = None
+    for attempt in range(1, IMAGE_PROVIDER_MAX_ATTEMPTS + 1):
+        try:
+            return await operation()
+        except ProviderError as exc:
+            last_error = exc
+            if attempt >= IMAGE_PROVIDER_MAX_ATTEMPTS or not _is_retryable_provider_error(exc):
+                raise
+            await asyncio.sleep(min(2 ** (attempt - 1), 4))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Provider operation did not return a response")
+
+
+def _is_retryable_provider_error(exc: ProviderError) -> bool:
+    if exc.status_code not in RETRYABLE_PROVIDER_STATUS_CODES:
+        return False
+    payload = exc.payload
+    if not isinstance(payload, dict):
+        return True
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        error_type = str(error.get("type") or "")
+        message = str(error.get("message") or "")
+    else:
+        error_type = str(payload.get("type") or "")
+        message = str(payload.get("message") or payload.get("error") or "")
+
+    lowered = message.lower()
+    if "insufficient" in lowered or "balance" in lowered:
+        return False
+    if error_type in {"upstream_error", "rate_limit_error", "server_error"}:
+        return True
+    return "upstream" in lowered or "temporarily unavailable" in lowered
 
 
 def _record_failed_history(
