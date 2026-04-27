@@ -419,7 +419,7 @@ docker compose build
 - QQ：935764227
 - Telegram：https://t.me/jokoacoount
 - 交流群：1076496247
-- 中转站 ：https://ai.get-money.locker
+- 演示站 ：https://image.get-money.locker
 
 ## 开源协议
 
