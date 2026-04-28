@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import { ImagePlus, Grid, List, Maximize2, RefreshCw, Loader2, X } from 'lucide-react';
-import { editImage, generateImage, getConfig, getHistory, getInspirations, getInspirationStats, HistoryItem, InspirationItem } from '../api';
+import { ArrowUp, ImagePlus, Grid, List, Maximize2, RefreshCw, Loader2, Search, X } from 'lucide-react';
+import { editImage, generateImage, getConfig, getHistory, getInspirations, HistoryItem, InspirationItem } from '../api';
 import { useAuth } from '../auth';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import MasonryGrid from '../components/MasonryGrid';
@@ -78,6 +78,9 @@ export default function Home() {
   const [hasMoreInspirations, setHasMoreInspirations] = useState(true);
   const [inspirationOffset, setInspirationOffset] = useState(0);
   const [inspirationTotal, setInspirationTotal] = useState(0);
+  const [inspirationSearchInput, setInspirationSearchInput] = useState('');
+  const [inspirationQuery, setInspirationQuery] = useState('');
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -116,6 +119,20 @@ export default function Home() {
   }, [aspectRatio, imageScale]);
 
   useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setInspirationQuery(inspirationSearchInput.trim());
+    }, 350);
+    return () => window.clearTimeout(handle);
+  }, [inspirationSearchInput]);
+
+  useEffect(() => {
+    const updateBackToTop = () => setShowBackToTop(window.scrollY > 720);
+    updateBackToTop();
+    window.addEventListener('scroll', updateBackToTop, { passive: true });
+    return () => window.removeEventListener('scroll', updateBackToTop);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     setFeedLoading(true);
     setLoadingMoreFeed(false);
@@ -124,17 +141,17 @@ export default function Home() {
     setInspirationTotal(0);
     setInspirations([]);
     setError('');
+    const query = inspirationQuery || undefined;
     const task = Promise.all([
       getHistory({ limit: 12 }),
-      getInspirations({ limit: FEED_PAGE_SIZE, offset: 0 }),
-      getInspirationStats(),
+      getInspirations({ limit: FEED_PAGE_SIZE, offset: 0, q: query }),
     ]);
     task
-      .then(([historyData, inspirationData, statsData]) => {
+      .then(([historyData, inspirationData]) => {
         if (cancelled) return;
         setHistory(historyData.items.filter((item) => item.status === 'succeeded' && Boolean(item.image_url)));
         setInspirations(inspirationData.items);
-        const nextTotal = Number(statsData.total || inspirationData.items.length || 0);
+        const nextTotal = Number(inspirationData.total ?? inspirationData.items.length ?? 0);
         setInspirationTotal(nextTotal);
         setInspirationOffset(inspirationData.items.length);
         setHasMoreInspirations(inspirationData.items.length < nextTotal);
@@ -152,7 +169,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [viewer?.owner_id]);
+  }, [inspirationQuery, viewer?.owner_id]);
 
   const loadMoreInspirations = useCallback(async () => {
     if (feedLoading || loadingMoreFeed || !hasMoreInspirations) {
@@ -160,21 +177,27 @@ export default function Home() {
     }
     setLoadingMoreFeed(true);
     try {
-      const data = await getInspirations({ limit: FEED_PAGE_SIZE, offset: inspirationOffset });
+      const data = await getInspirations({
+        limit: FEED_PAGE_SIZE,
+        offset: inspirationOffset,
+        q: inspirationQuery || undefined,
+      });
       setInspirations((current) => {
         const seen = new Set(current.map((item) => item.id));
         const nextItems = data.items.filter((item) => !seen.has(item.id));
         return [...current, ...nextItems];
       });
       const nextOffset = inspirationOffset + data.items.length;
+      const nextTotal = Number(data.total ?? inspirationTotal);
+      setInspirationTotal(nextTotal);
       setInspirationOffset(nextOffset);
-      setHasMoreInspirations(inspirationTotal > 0 ? nextOffset < inspirationTotal : data.items.length === FEED_PAGE_SIZE);
+      setHasMoreInspirations(nextTotal > 0 ? nextOffset < nextTotal : data.items.length === FEED_PAGE_SIZE);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoadingMoreFeed(false);
     }
-  }, [feedLoading, hasMoreInspirations, inspirationOffset, inspirationTotal, loadingMoreFeed]);
+  }, [feedLoading, hasMoreInspirations, inspirationOffset, inspirationQuery, inspirationTotal, loadingMoreFeed]);
 
   useEffect(() => {
     const target = loadMoreRef.current;
@@ -227,18 +250,22 @@ export default function Home() {
   ]);
 
   const generatedFeed = mergedHistory.map((item) => ({
-        id: `ID:${item.id.slice(0, 4).toUpperCase()}`,
-        img: item.image_url || '',
-        prompt: item.prompt,
-        title: item.mode.toUpperCase(),
-      }));
+    key: `history-${item.id}`,
+    id: `ID:${item.id.slice(0, 4).toUpperCase()}`,
+    img: item.image_url || '',
+    prompt: item.prompt,
+    title: item.mode.toUpperCase(),
+  }));
   const inspirationFeed = inspirations.map((item) => ({
+    key: `case-${item.id}`,
     id: item.author || item.section,
     img: item.image_url || '',
     prompt: item.prompt,
     title: item.title,
   }));
-  const visibleFeed = [...generatedFeed, ...inspirationFeed].filter((item) => item.img);
+  const hasSearchInput = inspirationSearchInput.trim().length > 0;
+  const visibleFeed = [...(hasSearchInput ? [] : generatedFeed), ...inspirationFeed].filter((item) => item.img);
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
   const handleAspectRatioChange = (nextRatio: string) => {
     setAspectRatio(nextRatio);
     if (nextRatio === '1:1' && imageScale === '4K') {
@@ -282,6 +309,37 @@ export default function Home() {
 
       {error && <div className="mb-6 border border-error/40 bg-error/10 p-4 text-error text-xs">{error}</div>}
 
+      <div className="mb-6 flex flex-col gap-3 border border-primary/20 bg-black/50 p-3 md:flex-row md:items-center md:justify-between">
+        <label className="flex min-w-0 flex-1 items-center gap-3 border border-white/10 bg-surface-container-low/70 px-3 py-2 text-white/70 focus-within:border-primary">
+          <Search className="shrink-0 text-primary/70" size={16} />
+          <input
+            className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-white/30"
+            value={inspirationSearchInput}
+            onChange={(event) => setInspirationSearchInput(event.target.value)}
+            placeholder={t('home_case_search')}
+          />
+          {inspirationSearchInput ? (
+            <button
+              className="flex h-7 w-7 shrink-0 items-center justify-center text-white/45 transition-colors hover:text-primary"
+              type="button"
+              title={t('home_case_clear_search')}
+              aria-label={t('home_case_clear_search')}
+              onClick={() => {
+                setInspirationSearchInput('');
+                setInspirationQuery('');
+              }}
+            >
+              <X size={15} />
+            </button>
+          ) : null}
+        </label>
+        <div className="shrink-0 font-code-data text-[10px] uppercase tracking-[0.24em] text-white/40">
+          {inspirationQuery
+            ? t('home_case_search_results', { total: inspirationTotal })
+            : t('home_case_total', { total: inspirationTotal })}
+        </div>
+      </div>
+
       {feedLoading ? (
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: 8 }).map((_, index) => (
@@ -304,7 +362,7 @@ export default function Home() {
         <>
           <MasonryGrid
             items={visibleFeed}
-            getKey={(item, index) => `${item.id}-${index}`}
+            getKey={(item) => item.key}
             renderItem={(item) => (
               <div className="overflow-hidden border border-primary/30 bg-black">
                 <button
@@ -338,16 +396,16 @@ export default function Home() {
                     >
                       <Maximize2 size={15} />
                     </button>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setPromptValue(item.prompt);
-                    }}
-                    className="flex h-10 items-center justify-center gap-2 bg-primary px-3 text-xs font-black uppercase text-black shadow-[0_0_10px_rgba(0,243,255,0.35)] transition-all duration-300 hover:bg-white hover:shadow-white/40"
-                  >
-                    <RefreshCw size={14} />
-                    {t('home_clone_prompt')}
-                  </button>
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setPromptValue(item.prompt);
+                      }}
+                      className="flex h-10 items-center justify-center gap-2 bg-primary px-3 text-xs font-black uppercase text-black shadow-[0_0_10px_rgba(0,243,255,0.35)] transition-all duration-300 hover:bg-white hover:shadow-white/40"
+                    >
+                      <RefreshCw size={14} />
+                      {t('home_clone_prompt')}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -482,6 +540,17 @@ export default function Home() {
         subtitle={previewItem?.prompt}
         onClose={() => setPreviewItem(null)}
       />
+      {showBackToTop ? (
+        <button
+          className="fixed bottom-[14rem] right-5 z-40 flex h-11 w-11 items-center justify-center border border-primary/40 bg-black/80 text-primary shadow-[0_0_18px_rgba(0,243,255,0.22)] backdrop-blur transition-colors hover:bg-primary hover:text-black md:bottom-28 md:right-8"
+          type="button"
+          title={t('home_back_to_top')}
+          aria-label={t('home_back_to_top')}
+          onClick={scrollToTop}
+        >
+          <ArrowUp size={18} />
+        </button>
+      ) : null}
     </div>
   );
 }

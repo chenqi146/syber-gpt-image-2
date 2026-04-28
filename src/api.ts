@@ -98,6 +98,13 @@ export type InspirationStats = {
   last_error: string | null;
 };
 
+export type InspirationListResponse = {
+  items: InspirationItem[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type BalanceInfo = {
   ok: boolean;
   remaining: number | null;
@@ -321,7 +328,7 @@ export function getInspirations(params: { limit?: number; offset?: number; q?: s
   if (params.q) search.set('q', params.q);
   if (params.section) search.set('section', params.section);
   const query = search.toString();
-  return request<{ items: InspirationItem[] }>(`/api/inspirations${query ? `?${query}` : ''}`);
+  return request<InspirationListResponse>(`/api/inspirations${query ? `?${query}` : ''}`);
 }
 
 export function getInspirationStats() {

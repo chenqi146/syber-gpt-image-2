@@ -425,14 +425,18 @@ def test_user_can_publish_and_unpublish_history_as_public_case(tmp_path: Path) -
         assert published_data["inspiration"]["section"] == "用户作品"
         assert published_data["inspiration"]["prompt"] == "public neon gallery"
 
-        public_cases = client.get("/api/inspirations?q=public%20neon").json()["items"]
+        public_cases_payload = client.get("/api/inspirations?q=public%20neon").json()
+        public_cases = public_cases_payload["items"]
+        assert public_cases_payload["total"] == 1
         assert len(public_cases) == 1
         assert public_cases[0]["source_url"] == "joko-image://user-gallery"
 
         unpublished = client.delete(f"/api/history/{history_id}/publish")
         assert unpublished.status_code == 200
         assert unpublished.json()["item"]["published"] is False
-        public_cases_after = client.get("/api/inspirations?q=public%20neon").json()["items"]
+        public_cases_after_payload = client.get("/api/inspirations?q=public%20neon").json()
+        public_cases_after = public_cases_after_payload["items"]
+        assert public_cases_after_payload["total"] == 0
         assert public_cases_after == []
 
 
@@ -708,5 +712,7 @@ def test_manual_inspiration_sync_endpoint(tmp_path: Path) -> None:
         response = client.get("/api/inspirations")
 
         assert response.status_code == 200
-        item = response.json()["items"][0]
+        payload = response.json()
+        assert payload["total"] == 1
+        item = payload["items"][0]
         assert item["title"] == "Mockup"

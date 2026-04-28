@@ -1087,16 +1087,7 @@ class Database:
     ) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 200))
         offset = max(0, offset)
-        clauses = []
-        params: list[Any] = []
-        if q.strip():
-            clauses.append("(lower(title) LIKE ? OR lower(prompt) LIKE ? OR lower(author) LIKE ?)")
-            search = f"%{q.strip().lower()}%"
-            params.extend([search, search, search])
-        if section.strip():
-            clauses.append("section = ?")
-            params.append(section.strip())
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        where, params = self._inspiration_where(q=q, section=section)
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1108,6 +1099,32 @@ class Database:
                 (*params, limit, offset),
             ).fetchall()
         return [_inspiration_row(row) for row in rows]
+
+    def count_inspirations(self, q: str = "", section: str = "") -> int:
+        where, params = self._inspiration_where(q=q, section=section)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM inspiration_prompts
+                {where}
+                """,
+                params,
+            ).fetchone()
+        return int(row["total"] if row else 0)
+
+    @staticmethod
+    def _inspiration_where(q: str = "", section: str = "") -> tuple[str, list[Any]]:
+        clauses = []
+        params: list[Any] = []
+        if q.strip():
+            clauses.append("(lower(title) LIKE ? OR lower(prompt) LIKE ? OR lower(author) LIKE ?)")
+            search = f"%{q.strip().lower()}%"
+            params.extend([search, search, search])
+        if section.strip():
+            clauses.append("section = ?")
+            params.append(section.strip())
+        return (f"WHERE {' AND '.join(clauses)}" if clauses else "", params)
 
     def inspiration_stats(self) -> dict[str, Any]:
         with self.connect() as conn:

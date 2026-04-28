@@ -500,7 +500,12 @@ def create_app(
         section: str = "",
         db: Database = Depends(_db),
     ) -> dict[str, Any]:
-        return {"items": db.list_inspirations(limit=limit, offset=offset, q=q, section=section)}
+        return {
+            "items": db.list_inspirations(limit=limit, offset=offset, q=q, section=section),
+            "total": db.count_inspirations(q=q, section=section),
+            "limit": limit,
+            "offset": offset,
+        }
 
     @app.get("/api/inspirations/stats")
     async def inspiration_stats(db: Database = Depends(_db)) -> dict[str, Any]:
