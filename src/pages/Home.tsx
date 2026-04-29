@@ -178,7 +178,6 @@ export default function Home() {
     setError('');
     const query = inspirationQuery || undefined;
     if (feedState.initialized && feedState.loadedOwnerId === ownerId && feedState.loadedQuery === (query || '')) {
-      window.requestAnimationFrame(() => window.scrollTo({ top: feedState.scrollY, behavior: 'auto' }));
       return () => {
         cancelled = true;
       };
@@ -223,7 +222,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [feedState.initialized, feedState.loadedOwnerId, feedState.loadedQuery, feedState.scrollY, inspirationQuery, patchState, viewer?.owner_id]);
+  }, [feedState.initialized, feedState.loadedOwnerId, feedState.loadedQuery, inspirationQuery, patchState, viewer?.owner_id]);
 
   const loadMoreInspirations = useCallback(async () => {
     if (feedLoading || loadingMoreFeed || !hasMoreInspirations) {
@@ -274,20 +273,13 @@ export default function Home() {
   }, [feedLoading, hasMoreInspirations, loadMoreInspirations, loadingMoreFeed]);
 
   useEffect(() => {
-    let ticking = false;
     const initialScrollY = feedState.scrollY;
-    const saveScroll = () => {
-      if (ticking) return;
-      ticking = true;
-      window.requestAnimationFrame(() => {
-        patchState({ scrollY: window.scrollY });
-        ticking = false;
-      });
-    };
-    window.addEventListener('scroll', saveScroll, { passive: true });
-    window.requestAnimationFrame(() => window.scrollTo({ top: initialScrollY, behavior: 'auto' }));
+    window.requestAnimationFrame(() => {
+      if (initialScrollY > 0) {
+        window.scrollTo({ top: initialScrollY, behavior: 'auto' });
+      }
+    });
     return () => {
-      window.removeEventListener('scroll', saveScroll);
       patchState({ scrollY: window.scrollY });
     };
   }, [patchState]);
