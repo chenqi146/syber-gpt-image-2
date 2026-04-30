@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowUp, Heart, ImagePlus, Maximize2, RefreshCw, Loader2, Search, Sparkles, X } from 'lucide-react';
+import { ArrowUp, Heart, ImagePlus, Maximize2, Minimize2, RefreshCw, Loader2, Search, Sparkles, X } from 'lucide-react';
 import {
   editImage,
   favoriteInspiration,
@@ -79,6 +79,7 @@ export default function Home() {
   const [imageCount, setImageCount] = useState('1');
   const [previewItem, setPreviewItem] = useState<{ imageUrl: string; prompt: string } | null>(null);
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
+  const [generationPanelExpanded, setGenerationPanelExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [optimizingPrompt, setOptimizingPrompt] = useState(false);
   const [draggingReference, setDraggingReference] = useState(false);
@@ -104,6 +105,7 @@ export default function Home() {
     const pendingPrompt = window.sessionStorage.getItem(PROMPT_TRANSFER_KEY);
     if (pendingPrompt) {
       setPromptValue(pendingPrompt);
+      setGenerationPanelExpanded(true);
       window.sessionStorage.removeItem(PROMPT_TRANSFER_KEY);
     }
   }, []);
@@ -349,6 +351,7 @@ export default function Home() {
 
   async function handleClonePrompt(prompt: string) {
     setPromptValue(prompt);
+    setGenerationPanelExpanded(true);
     await copyTextToClipboard(prompt);
     setMessage(t('home_prompt_copied'));
   }
@@ -395,6 +398,7 @@ export default function Home() {
         return;
       }
       setSelectedFiles((current) => [...current, ...imageFiles]);
+      setGenerationPanelExpanded(true);
       setMessage(t('home_mode_edit'));
     },
     [t],
@@ -427,7 +431,7 @@ export default function Home() {
   };
 
   return (
-    <div className="pt-24 pb-[19rem] px-4 sm:pb-56 sm:px-6 max-w-[1440px] mx-auto min-h-screen bg-[radial-gradient(ellipse_at_top,var(--color-surface-container-high),var(--color-background))] font-mono">
+    <div className={`pt-24 px-4 sm:px-6 max-w-[1440px] mx-auto min-h-screen bg-[radial-gradient(ellipse_at_top,var(--color-surface-container-high),var(--color-background))] font-mono ${generationPanelExpanded ? 'pb-[19rem] sm:pb-56' : 'pb-28 sm:pb-32'}`}>
       <div className="flex justify-between items-end mb-8">
         <div className="flex flex-col gap-2">
            <div className="flex items-center gap-2 text-[10px] text-secondary uppercase font-bold tracking-widest">
@@ -624,7 +628,9 @@ export default function Home() {
       )}
 
       <div
-        className={`fixed bottom-3 left-3 right-3 z-50 mx-auto max-w-[1080px] rounded-sm border bg-surface-container/90 p-3 font-mono shadow-[0_-20px_40px_rgba(0,0,0,0.75)] backdrop-blur-xl transition-colors md:bottom-5 md:p-4 ${
+        className={`fixed bottom-3 left-3 right-3 z-50 mx-auto rounded-sm border bg-surface-container/90 font-mono shadow-[0_-20px_40px_rgba(0,0,0,0.75)] backdrop-blur-xl transition-colors md:bottom-5 ${
+          generationPanelExpanded ? 'max-w-[1080px] p-3 md:p-4' : 'max-w-[920px] p-2 md:p-2.5'
+        } ${
           draggingReference ? 'border-secondary bg-secondary/10' : 'border-primary/40'
         }`}
         onDragEnter={handleReferenceDragOver}
@@ -632,7 +638,15 @@ export default function Home() {
         onDragOver={handleReferenceDragOver}
         onDrop={handleReferenceDrop}
       >
-        <div className="mb-2 flex min-w-0 items-center gap-3">
+        <input
+          ref={fileInputRef}
+          className="hidden"
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          onChange={handleReferenceImages}
+        />
+        <div className={`${generationPanelExpanded ? 'mb-2' : ''} flex min-w-0 items-center gap-2 md:gap-3`}>
           <div className="flex shrink-0 items-center gap-2 border-r border-white/10 pr-3 text-[10px] text-white/50">
             <span className="h-2 w-2 rounded-full bg-secondary" />
             {t('home_mode')}: {selectedFiles.length ? t('home_mode_edit') : t('home_mode_generate')}
@@ -642,102 +656,142 @@ export default function Home() {
             <span>{aspectRatio}</span>
             <span>{providerImageSize(imageScale, aspectRatio)}</span>
             <span>{imageQuality}</span>
+            {Number(imageCount) > 1 ? <span>x{imageCount}</span> : null}
           </div>
-          <div className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-widest text-primary">
-            {message || (promptValue ? t('home_message_loaded') : t('home_message_waiting'))}
-          </div>
-        </div>
-
-        <div className="mb-2 grid grid-cols-2 items-end gap-2 sm:grid-cols-4 lg:grid-cols-[128px_112px_104px_84px_1fr_auto]">
-          <GenerationSelect
-            label={t('home_size')}
-            value={imageScale}
-            onChange={setImageScale}
-            options={SIZE_OPTIONS}
-            getOptionLabel={(option) => SIZE_LABELS[option] || option}
-            isOptionDisabled={(option) => !isSupportedImagePreset(option, aspectRatio)}
-          />
-          <GenerationSelect label={t('home_aspect_ratio')} value={aspectRatio} onChange={handleAspectRatioChange} options={ASPECT_RATIO_OPTIONS} />
-          <GenerationSelect label={t('home_quality')} value={imageQuality} onChange={setImageQuality} options={QUALITY_OPTIONS} />
-          <GenerationSelect
-            label={t('home_image_count')}
-            value={imageCount}
-            onChange={setImageCount}
-            options={IMAGE_COUNT_OPTIONS}
-          />
-          <div className="col-span-2 flex min-w-0 gap-2 sm:col-span-4 lg:col-span-2">
-            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 border border-primary/20 bg-black px-3 text-primary focus-within:border-primary">
-              <Sparkles className="shrink-0 text-secondary/80" size={14} />
-              <input
-                className="min-w-0 flex-1 bg-transparent text-xs text-primary outline-none placeholder:text-primary/25"
-                value={promptInstruction}
-                onChange={(event) => setPromptInstruction(event.target.value)}
-                placeholder={t('home_prompt_instruction')}
-              />
-            </label>
-            <button
-              className="flex h-9 shrink-0 items-center justify-center gap-2 border border-secondary/50 bg-secondary/10 px-3 text-[11px] font-black uppercase tracking-widest text-secondary transition-colors hover:bg-secondary hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
-              type="button"
-              disabled={optimizingPrompt || !promptValue.trim()}
-              onClick={handleOptimizePrompt}
-            >
-              {optimizingPrompt ? <Loader2 className="animate-spin" size={13} /> : <Sparkles size={13} />}
-              <span className="hidden sm:inline">{optimizingPrompt ? t('home_optimizing_prompt') : t('home_optimize_prompt')}</span>
-              <span className="sm:hidden">AI</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
-          <div className="min-w-0">
-            <textarea
-              value={promptValue}
-              onChange={(e) => setPromptValue(e.target.value)}
-              className="h-16 w-full resize-none border border-primary/20 bg-black p-2.5 text-sm text-primary shadow-inner focus:border-primary focus:outline-none placeholder:text-primary/20 md:h-20 md:p-3"
-              placeholder={t('home_placeholder')}
-            ></textarea>
-            <div className="mt-1 flex items-center justify-between gap-3 text-[8px] uppercase leading-none text-primary/40">
+          <button
+            type="button"
+            className="min-w-0 flex-1 truncate text-left text-[10px] tracking-widest text-primary transition-colors hover:text-secondary"
+            onClick={() => setGenerationPanelExpanded(true)}
+            title={generationPanelExpanded ? undefined : t('home_panel_expand')}
+          >
+            {message || (promptValue ? promptValue : t('home_message_waiting'))}
+          </button>
+          {!generationPanelExpanded ? (
+            <>
               <button
-                className="flex items-center gap-1 text-primary/60 transition-colors hover:text-primary"
                 type="button"
-                onClick={() => setPromptEditorOpen(true)}
-                title={t('prompt_editor_expand')}
+                onClick={() => fileInputRef.current?.click()}
+                className="flex h-9 w-9 shrink-0 items-center justify-center border border-dashed border-primary/25 text-white/45 transition-colors hover:border-primary hover:text-primary"
+                title={t('home_ref_image')}
               >
-                <Maximize2 size={10} />
-                {t('prompt_editor_expand')}
+                <ImagePlus size={15} />
               </button>
-              <span>UTF-8 // AI-GEN // [{promptValue.length}/8000]</span>
-            </div>
-          </div>
-
-          <div className="flex min-w-0 gap-2 sm:shrink-0">
-            <input
-              ref={fileInputRef}
-              className="hidden"
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              multiple
-              onChange={handleReferenceImages}
-            />
+              <button
+                onClick={handleExecute}
+                disabled={loading || !promptValue.trim()}
+                className="flex h-9 shrink-0 items-center justify-center bg-primary px-3 text-[10px] font-black uppercase tracking-widest text-black shadow-[0_0_12px_rgba(0,243,255,0.35)] transition-transform hover:scale-95 disabled:opacity-40 disabled:hover:scale-100"
+              >
+                {loading ? <Loader2 className="animate-spin" size={15} /> : t('home_execute')}
+              </button>
+              <button
+                type="button"
+                className="flex h-9 w-9 shrink-0 items-center justify-center border border-secondary/40 text-secondary transition-colors hover:bg-secondary hover:text-black"
+                title={t('home_panel_expand')}
+                aria-label={t('home_panel_expand')}
+                onClick={() => setGenerationPanelExpanded(true)}
+              >
+                <Maximize2 size={15} />
+              </button>
+            </>
+          ) : (
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="group relative flex h-12 w-14 shrink-0 cursor-pointer flex-col items-center justify-center border border-dashed border-primary/20 transition-colors hover:bg-primary/5 sm:h-16 md:h-20 md:w-16"
-              title={t('home_ref_image')}
+              className="flex h-8 w-8 shrink-0 items-center justify-center border border-white/10 text-white/55 transition-colors hover:border-primary hover:text-primary"
+              title={t('home_panel_collapse')}
+              aria-label={t('home_panel_collapse')}
+              onClick={() => setGenerationPanelExpanded(false)}
             >
-              <ImagePlus className="mb-1 h-5 w-5 text-white/30 transition-colors group-hover:text-primary" />
-              <span className="max-w-full truncate px-1 text-[8px] uppercase text-white/40 group-hover:text-primary">{t('home_ref_image')}</span>
+              <Minimize2 size={14} />
             </button>
-            <button
-              onClick={handleExecute}
-              disabled={loading || !promptValue.trim()}
-              className="flex h-12 min-w-0 flex-1 flex-col items-center justify-center bg-primary text-black font-black shadow-[0_0_15px_rgba(0,243,255,0.4)] transition-transform hover:scale-95 disabled:opacity-40 disabled:hover:scale-100 sm:h-16 sm:w-20 sm:flex-none md:h-20 md:w-28"
-            >
-              {loading ? <Loader2 className="animate-spin" size={22} /> : <span className="mb-[-4px] text-lg md:text-xl">{t('home_execute')}</span>}
-              <span className="text-[9px] italic opacity-70 md:text-[10px]">{selectedFiles.length ? t('home_edit') : t('home_generate')}</span>
-            </button>
-          </div>
+          )}
         </div>
+
+        {generationPanelExpanded ? (
+          <>
+            <div className="mb-2 grid grid-cols-2 items-end gap-2 sm:grid-cols-4 lg:grid-cols-[128px_112px_104px_84px_1fr_auto]">
+              <GenerationSelect
+                label={t('home_size')}
+                value={imageScale}
+                onChange={setImageScale}
+                options={SIZE_OPTIONS}
+                getOptionLabel={(option) => SIZE_LABELS[option] || option}
+                isOptionDisabled={(option) => !isSupportedImagePreset(option, aspectRatio)}
+              />
+              <GenerationSelect label={t('home_aspect_ratio')} value={aspectRatio} onChange={handleAspectRatioChange} options={ASPECT_RATIO_OPTIONS} />
+              <GenerationSelect label={t('home_quality')} value={imageQuality} onChange={setImageQuality} options={QUALITY_OPTIONS} />
+              <GenerationSelect
+                label={t('home_image_count')}
+                value={imageCount}
+                onChange={setImageCount}
+                options={IMAGE_COUNT_OPTIONS}
+              />
+              <div className="col-span-2 flex min-w-0 gap-2 sm:col-span-4 lg:col-span-2">
+                <label className="flex h-9 min-w-0 flex-1 items-center gap-2 border border-primary/20 bg-black px-3 text-primary focus-within:border-primary">
+                  <Sparkles className="shrink-0 text-secondary/80" size={14} />
+                  <input
+                    className="min-w-0 flex-1 bg-transparent text-xs text-primary outline-none placeholder:text-primary/25"
+                    value={promptInstruction}
+                    onChange={(event) => setPromptInstruction(event.target.value)}
+                    placeholder={t('home_prompt_instruction')}
+                  />
+                </label>
+                <button
+                  className="flex h-9 shrink-0 items-center justify-center gap-2 border border-secondary/50 bg-secondary/10 px-3 text-[11px] font-black uppercase tracking-widest text-secondary transition-colors hover:bg-secondary hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+                  type="button"
+                  disabled={optimizingPrompt || !promptValue.trim()}
+                  onClick={handleOptimizePrompt}
+                >
+                  {optimizingPrompt ? <Loader2 className="animate-spin" size={13} /> : <Sparkles size={13} />}
+                  <span className="hidden sm:inline">{optimizingPrompt ? t('home_optimizing_prompt') : t('home_optimize_prompt')}</span>
+                  <span className="sm:hidden">AI</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+              <div className="min-w-0">
+                <textarea
+                  value={promptValue}
+                  onChange={(e) => setPromptValue(e.target.value)}
+                  className="h-16 w-full resize-none border border-primary/20 bg-black p-2.5 text-sm text-primary shadow-inner focus:border-primary focus:outline-none placeholder:text-primary/20 md:h-20 md:p-3"
+                  placeholder={t('home_placeholder')}
+                ></textarea>
+                <div className="mt-1 flex items-center justify-between gap-3 text-[8px] uppercase leading-none text-primary/40">
+                  <button
+                    className="flex items-center gap-1 text-primary/60 transition-colors hover:text-primary"
+                    type="button"
+                    onClick={() => setPromptEditorOpen(true)}
+                    title={t('prompt_editor_expand')}
+                  >
+                    <Maximize2 size={10} />
+                    {t('prompt_editor_expand')}
+                  </button>
+                  <span>UTF-8 // AI-GEN // [{promptValue.length}/8000]</span>
+                </div>
+              </div>
+
+              <div className="flex min-w-0 gap-2 sm:shrink-0">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="group relative flex h-12 w-14 shrink-0 cursor-pointer flex-col items-center justify-center border border-dashed border-primary/20 transition-colors hover:bg-primary/5 sm:h-16 md:h-20 md:w-16"
+                  title={t('home_ref_image')}
+                >
+                  <ImagePlus className="mb-1 h-5 w-5 text-white/30 transition-colors group-hover:text-primary" />
+                  <span className="max-w-full truncate px-1 text-[8px] uppercase text-white/40 group-hover:text-primary">{t('home_ref_image')}</span>
+                </button>
+                <button
+                  onClick={handleExecute}
+                  disabled={loading || !promptValue.trim()}
+                  className="flex h-12 min-w-0 flex-1 flex-col items-center justify-center bg-primary text-black font-black shadow-[0_0_15px_rgba(0,243,255,0.4)] transition-transform hover:scale-95 disabled:opacity-40 disabled:hover:scale-100 sm:h-16 sm:w-20 sm:flex-none md:h-20 md:w-28"
+                >
+                  {loading ? <Loader2 className="animate-spin" size={22} /> : <span className="mb-[-4px] text-lg md:text-xl">{t('home_execute')}</span>}
+                  <span className="text-[9px] italic opacity-70 md:text-[10px]">{selectedFiles.length ? t('home_edit') : t('home_generate')}</span>
+                </button>
+              </div>
+            </div>
+          </>
+        ) : null}
 
         {selectedPreviews.length > 0 && (
           <div className="mt-2 flex max-w-full gap-2 overflow-x-auto pb-1">
@@ -780,7 +834,9 @@ export default function Home() {
       />
       {showBackToTop ? (
         <button
-          className="fixed bottom-[14rem] right-5 z-40 flex h-11 w-11 items-center justify-center border border-primary/40 bg-black/80 text-primary shadow-[0_0_18px_rgba(0,243,255,0.22)] backdrop-blur transition-colors hover:bg-primary hover:text-black md:bottom-28 md:right-8"
+          className={`fixed right-5 z-40 flex h-11 w-11 items-center justify-center border border-primary/40 bg-black/80 text-primary shadow-[0_0_18px_rgba(0,243,255,0.22)] backdrop-blur transition-colors hover:bg-primary hover:text-black md:right-8 ${
+            generationPanelExpanded ? 'bottom-[14rem] md:bottom-28' : 'bottom-24 md:bottom-24'
+          }`}
           type="button"
           title={t('home_back_to_top')}
           aria-label={t('home_back_to_top')}
