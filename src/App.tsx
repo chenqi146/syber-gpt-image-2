@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom';
 import TopNavBar from './components/TopNavBar';
 import SideNavBar from './components/SideNavBar';
 import Home from './pages/Home';
+import Ecommerce from './pages/Ecommerce';
 import History from './pages/History';
 import Favorites from './pages/Favorites';
 import Config from './pages/Config';
@@ -22,6 +23,7 @@ export default function App() {
       <TaskToastStack />
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/ecommerce" element={<Ecommerce />} />
         <Route path="/history" element={
           <>
             <SideNavBar />

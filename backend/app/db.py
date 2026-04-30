@@ -600,10 +600,13 @@ class Database:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at
+                SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at,
+                       t.prompt AS task_prompt, t.result_json AS task_result_json, t.request_json AS task_request_json
                 FROM image_history h
                 LEFT JOIN inspiration_prompts p
                     ON p.source_url = ? AND p.source_item_id = h.id
+                LEFT JOIN image_tasks t
+                    ON t.id = h.task_id AND t.owner_id = h.owner_id
                 WHERE h.owner_id = ? AND h.id = ?
                 """,
                 (USER_GALLERY_SOURCE_URL, owner_id, history_id),
@@ -618,10 +621,13 @@ class Database:
             if q.strip():
                 rows = conn.execute(
                     """
-                    SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at
+                    SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at,
+                           t.prompt AS task_prompt, t.result_json AS task_result_json, t.request_json AS task_request_json
                     FROM image_history h
                     LEFT JOIN inspiration_prompts p
                         ON p.source_url = ? AND p.source_item_id = h.id
+                    LEFT JOIN image_tasks t
+                        ON t.id = h.task_id AND t.owner_id = h.owner_id
                     WHERE h.owner_id = ? AND lower(h.prompt) LIKE ?
                     ORDER BY h.created_at DESC, h.batch_index ASC, h.id DESC
                     LIMIT ? OFFSET ?
@@ -631,10 +637,13 @@ class Database:
             else:
                 rows = conn.execute(
                     """
-                    SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at
+                    SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at,
+                           t.prompt AS task_prompt, t.result_json AS task_result_json, t.request_json AS task_request_json
                     FROM image_history h
                     LEFT JOIN inspiration_prompts p
                         ON p.source_url = ? AND p.source_item_id = h.id
+                    LEFT JOIN image_tasks t
+                        ON t.id = h.task_id AND t.owner_id = h.owner_id
                     WHERE h.owner_id = ?
                     ORDER BY h.created_at DESC, h.batch_index ASC, h.id DESC
                     LIMIT ? OFFSET ?
@@ -784,10 +793,13 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at
+                SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at,
+                       t.prompt AS task_prompt, t.result_json AS task_result_json, t.request_json AS task_request_json
                 FROM image_history h
                 LEFT JOIN inspiration_prompts p
                     ON p.source_url = ? AND p.source_item_id = h.id
+                LEFT JOIN image_tasks t
+                    ON t.id = h.task_id AND t.owner_id = h.owner_id
                 WHERE h.owner_id = ? AND h.id IN ({placeholders})
                 """,
                 (USER_GALLERY_SOURCE_URL, owner_id, *history_ids),
@@ -1299,10 +1311,35 @@ def _history_row(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["usage"] = _json_load(data.pop("usage_json"))
     data["provider_response"] = _json_load(data.pop("provider_response_json"))
+    task_result = _json_load(data.pop("task_result_json", None))
+    task_request = _json_load(data.pop("task_request_json", None))
+    data["task_prompt"] = data.get("task_prompt")
+    data["task_result"] = task_result
+    data["task_request"] = _public_task_request_metadata(task_request)
     data["published_inspiration_id"] = data.get("published_inspiration_id")
     data["published_at"] = data.get("published_at")
     data["published"] = bool(data["published_inspiration_id"])
     return data
+
+
+def _public_task_request_metadata(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    ecommerce = value.get("ecommerce")
+    if not isinstance(ecommerce, dict):
+        return None
+    return {
+        "ecommerce": {
+            "product_name": ecommerce.get("product_name") or "",
+            "materials": ecommerce.get("materials") or "",
+            "selling_points": ecommerce.get("selling_points") or "",
+            "scenarios": ecommerce.get("scenarios") or "",
+            "platform": ecommerce.get("platform") or "",
+            "style": ecommerce.get("style") or "",
+            "extra_requirements": ecommerce.get("extra_requirements") or "",
+            "analysis": ecommerce.get("analysis") if isinstance(ecommerce.get("analysis"), dict) else None,
+        }
+    }
 
 
 def _ledger_row(row: sqlite3.Row) -> dict[str, Any]:

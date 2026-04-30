@@ -20,7 +20,7 @@ from .db import Database, utc_now
 from .inspirations import normalize_inspiration_source_urls, run_inspiration_sync_loop, sync_inspirations
 from .provider import OpenAICompatibleImageClient, ProviderError
 from .settings import Settings
-from .storage import save_provider_image, save_upload
+from .storage import load_stored_image_as_upload, save_provider_image, save_upload
 
 
 class ConfigUpdate(BaseModel):
@@ -43,6 +43,14 @@ class GenerateRequest(BaseModel):
     n: int = Field(default=1, ge=1, le=9)
     background: str | None = None
     output_format: str | None = None
+
+
+class HistoryEditRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=8000)
+    model: str | None = Field(default=None, max_length=128)
+    size: str | None = Field(default=None, max_length=64)
+    aspect_ratio: str | None = Field(default=None, max_length=32)
+    quality: str | None = Field(default=None, max_length=32)
 
 
 class PromptOptimizeRequest(BaseModel):
@@ -646,6 +654,53 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="History item not found")
         return record
+
+    @app.post("/api/history/{history_id}/edit")
+    async def edit_history_image(
+        history_id: str,
+        request: HistoryEditRequest,
+        raw_request: Request,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+    ) -> dict[str, Any]:
+        source = db.get_history(viewer.owner_id, history_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="History item not found")
+        image_path = source.get("image_path")
+        if not image_path or not Path(str(image_path)).exists():
+            raise HTTPException(status_code=400, detail="History item has no stored image to edit")
+        config = db.get_config(viewer.owner_id, settings, user_name=_viewer_name(viewer, settings))
+        source_upload = load_stored_image_as_upload(str(image_path), source.get("image_url"))
+        fields = {
+            "model": request.model or source.get("model") or config["model"],
+            "prompt": request.prompt,
+            "size": _provider_image_size(request.size or source.get("size") or config["default_size"], request.aspect_ratio or source.get("aspect_ratio") or None),
+            "quality": request.quality or source.get("quality") or config["default_quality"],
+            "n": "1",
+            "response_format": "b64_json",
+        }
+        task = db.create_image_task(
+            viewer.owner_id,
+            {
+                "mode": "edit",
+                "prompt": request.prompt,
+                "model": fields["model"],
+                "size": fields["size"],
+                "aspect_ratio": request.aspect_ratio or source.get("aspect_ratio") or "",
+                "quality": fields["quality"],
+                "request": {
+                    "fields": fields,
+                    "uploads": [source_upload],
+                    "mask": None,
+                    "source_history_id": history_id,
+                },
+                "input_image_url": source.get("image_url"),
+                "input_image_path": source.get("image_path"),
+            },
+        )
+        _schedule_image_task(raw_request.app, task["id"])
+        return _public_image_task(db, viewer.owner_id, task)
 
     @app.delete("/api/history/{history_id}")
     async def delete_history(

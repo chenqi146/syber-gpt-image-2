@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { Bell, CreditCard, Heart, History, ListTodo, LogOut, Menu, Terminal, UserCircle, X, Zap } from 'lucide-react';
+import { Bell, CreditCard, Heart, History, ImagePlus, ListTodo, LogOut, Menu, Terminal, UserCircle, X, Zap } from 'lucide-react';
 import { AccountInfo, formatBalance, getAccount, logoutAccount } from '../api';
 import { useAuth } from '../auth';
 import { useSite } from '../site';
@@ -41,6 +41,7 @@ export default function TopNavBar() {
   const rechargeUrl = 'https://ai.get-money.locker';
   const mobileNavItems = [
     { name: t('side_generate'), path: '/', icon: Zap },
+    { name: t('side_ecommerce'), path: '/ecommerce', icon: ImagePlus },
     { name: t('side_history'), path: '/history', icon: History },
     ...(viewer?.authenticated ? [{ name: t('side_favorites'), path: '/favorites', icon: Heart }] : []),
     { name: t('side_account'), path: '/account', icon: UserCircle },
@@ -72,6 +73,22 @@ export default function TopNavBar() {
           </div>
         </div>
         <nav className="hidden md:flex gap-6">
+          <Link
+            to="/"
+            className={`text-xs uppercase tracking-widest font-bold px-3 py-2 transition-all duration-300 hover:bg-primary/10 hover:text-primary ${
+              location.pathname === '/' ? 'text-primary border-b-2 border-primary' : 'text-on-surface-variant'
+            }`}
+          >
+            {t('home_tab_general')}
+          </Link>
+          <Link
+            to="/ecommerce"
+            className={`text-xs uppercase tracking-widest font-bold px-3 py-2 transition-all duration-300 hover:bg-primary/10 hover:text-primary ${
+              location.pathname === '/ecommerce' ? 'text-primary border-b-2 border-primary' : 'text-on-surface-variant'
+            }`}
+          >
+            {t('home_tab_ecommerce')}
+          </Link>
           <Link
             to="/history"
             className={`text-xs uppercase tracking-widest font-bold px-3 py-2 transition-all duration-300 hover:bg-primary/10 hover:text-primary ${

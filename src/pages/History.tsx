@@ -4,73 +4,9 @@ import { deleteHistory, formatDate, generateImage, getHistory, HistoryItem, publ
 import { useAuth } from '../auth';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import MasonryGrid from '../components/MasonryGrid';
+import { groupHistoryItems, HistoryGroup, mergeHistoryItems } from '../historyGroups';
 import { useSite } from '../site';
 import { useTasks } from '../tasks';
-
-function mergeHistory(items: HistoryItem[]) {
-  const merged = new Map<string, HistoryItem>();
-  for (const item of items) {
-    merged.set(item.id, item);
-  }
-  return [...merged.values()].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-}
-
-type HistoryGroup = {
-  key: string;
-  first: HistoryItem;
-  items: HistoryItem[];
-  images: { id: string; url: string; prompt: string }[];
-  createdAt: string;
-  publishedCount: number;
-  allPublished: boolean;
-};
-
-function groupHistoryItems(items: HistoryItem[]) {
-  const groups = new Map<string, HistoryItem[]>();
-  const order: string[] = [];
-  for (const item of items) {
-    const key = item.task_id || item.id;
-    if (!groups.has(key)) {
-      groups.set(key, []);
-      order.push(key);
-    }
-    groups.get(key)!.push(item);
-  }
-
-  return order
-    .map((key): HistoryGroup | null => {
-      const groupItems = groups.get(key) || [];
-      const sorted = [...groupItems].sort((a, b) => {
-        const batchDelta = (a.batch_index || 0) - (b.batch_index || 0);
-        if (batchDelta !== 0) return batchDelta;
-        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      });
-      const first = sorted[0];
-      if (!first) {
-        return null;
-      }
-      const images = sorted
-        .filter((item) => item.image_url)
-        .map((item) => ({ id: item.id, url: item.image_url || '', prompt: item.prompt }));
-      const publishableItems = sorted.filter((item) => item.status === 'succeeded' && Boolean(item.image_url));
-      const publishedCount = publishableItems.filter((item) => item.published).length;
-      const createdAt = sorted.reduce(
-        (latest, item) => (new Date(item.created_at).getTime() > new Date(latest).getTime() ? item.created_at : latest),
-        first.created_at,
-      );
-      return {
-        key,
-        first,
-        items: sorted,
-        images,
-        createdAt,
-        publishedCount,
-        allPublished: publishableItems.length > 0 && publishedCount === publishableItems.length,
-      };
-    })
-    .filter((group): group is HistoryGroup => Boolean(group))
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-}
 
 const getColorClasses = (colorMode: string) => {
   if (colorMode === 'primary') {
@@ -191,7 +127,7 @@ export default function History() {
   }
 
   const visibleGroups = groupHistoryItems(
-    mergeHistory([...taskHistoryItems, ...items]).filter((item) => !removedIds.includes(item.id)),
+    mergeHistoryItems([...taskHistoryItems, ...items]).filter((item) => !removedIds.includes(item.id)),
   );
 
   return (
@@ -290,7 +226,7 @@ export default function History() {
                 ) : null}
               </div>
               <p className={`mb-3 line-clamp-3 text-sm ${colors.textId} transition-colors`}>
-                {item.prompt}
+                {group.taskPrompt}
               </p>
               <button
                 className={`mb-2 flex h-10 w-full items-center justify-center gap-2 border px-3 text-xs font-black uppercase transition-all duration-300 disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -310,7 +246,7 @@ export default function History() {
                   className="flex h-10 items-center justify-center border border-white/20 bg-white/5 text-white transition-all hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
                   type="button"
                   title={t('history_preview')}
-                  onClick={() => setPreviewItem({ imageUrl: previewImage || null, prompt: item.prompt })}
+                  onClick={() => setPreviewItem({ imageUrl: previewImage || null, prompt: group.taskPrompt })}
                   disabled={!previewImage}
                 >
                   <Maximize2 size={14} />

@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { CreditCard, Heart, History, Terminal, UserCircle, Zap } from 'lucide-react';
+import { CreditCard, Heart, History, ImagePlus, Terminal, UserCircle, Zap } from 'lucide-react';
 import { useAuth } from '../auth';
 import { useSite } from '../site';
 
@@ -9,6 +9,7 @@ export default function SideNavBar() {
   const { t } = useSite();
 
   const navItems = [
+    { name: t('side_ecommerce'), path: '/ecommerce', icon: ImagePlus },
     { name: t('side_history'), path: '/history', icon: History },
     ...(viewer?.authenticated ? [{ name: t('side_favorites'), path: '/favorites', icon: Heart }] : []),
     { name: t('side_account'), path: '/account', icon: UserCircle },

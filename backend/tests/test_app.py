@@ -416,6 +416,8 @@ def test_generation_fans_out_multi_image_requests_into_one_task(tmp_path: Path) 
         ]
         assert len(history) == 3
         assert {item["task_id"] for item in history} == {task["id"]}
+        assert {item["task_prompt"] for item in history} == {"nine product cards"}
+        assert all(item["task_result"]["series_plan"]["source"] == "planner" for item in history)
         assert len(ledger) == 3
 
 
@@ -605,12 +607,37 @@ def test_ecommerce_generate_analyzes_product_and_creates_series_edit_task(tmp_pa
         assert all(fields["size"] == "1152x2048" for fields in provider.edited_fields)
         assert all(fields["n"] == 1 for fields in provider.edited_fields)
         assert [item["input_image_url"] for item in task["items"]]
+        history = client.get("/api/history").json()["items"]
+        assert history[0]["task_request"]["ecommerce"]["product_name"] == "天鹅绒PP棉抱枕芯"
         planner_messages = [
             payload["messages"][1]["content"]
             for payload in provider.chat_payloads
             if "系列图像提示词规划师" in payload["messages"][0]["content"]
         ]
         assert planner_messages and "商品图识别结果" in planner_messages[-1]
+
+
+def test_history_item_can_be_used_as_single_edit_source(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        client.put("/api/config", json={"api_key": "sk-test-123456"})
+        generated = client.post("/api/images/generate", json={"prompt": "original product", "size": "1K", "aspect_ratio": "1:1"})
+        source_task = wait_for_task(client, generated.json()["id"])
+        source_item = source_task["items"][0]
+
+        response = client.post(
+            f"/api/history/{source_item['id']}/edit",
+            json={"prompt": "基于这张图改成夏季风格", "size": "1K", "aspect_ratio": "1:1", "quality": "medium"},
+        )
+
+        assert response.status_code == 200
+        edit_task = wait_for_task(client, response.json()["id"])
+        assert edit_task["status"] == "succeeded"
+        assert edit_task["mode"] == "edit"
+        assert edit_task["prompt"] == "基于这张图改成夏季风格"
+        assert provider.edited_fields[-1]["prompt"] == "基于这张图改成夏季风格"
+        assert len(provider.edited_images[-1]) == 1
+        assert edit_task["items"][0]["input_image_url"] == source_item["image_url"]
 
 
 def test_account_includes_balance_and_stats(tmp_path: Path) -> None:

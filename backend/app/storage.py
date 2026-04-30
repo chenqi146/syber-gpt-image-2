@@ -31,6 +31,17 @@ async def save_upload(settings: Settings, upload: UploadFile) -> dict[str, str]:
     }
 
 
+def load_stored_image_as_upload(path_value: str, url_value: str | None = None) -> dict[str, str]:
+    path = Path(path_value)
+    filename = path.name
+    return {
+        "path": str(path),
+        "url": url_value or "",
+        "filename": filename,
+        "content_type": _content_type_from_suffix(path.suffix),
+    }
+
+
 async def save_provider_image(settings: Settings, history_id: str, item: dict[str, Any]) -> dict[str, str | None]:
     b64_json = item.get("b64_json")
     if isinstance(b64_json, str) and b64_json.strip():
@@ -117,3 +128,14 @@ def _suffix_from_name(name: str | None, default: str) -> str:
         return default
     suffix = Path(name.split("?", 1)[0]).suffix.lower()
     return suffix if suffix in {".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif"} else default
+
+
+def _content_type_from_suffix(suffix: str) -> str:
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".avif": "image/avif",
+        ".gif": "image/gif",
+    }.get(suffix.lower(), "application/octet-stream")

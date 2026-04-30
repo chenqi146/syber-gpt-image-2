@@ -46,6 +46,28 @@ export type HistoryItem = {
   revised_prompt: string | null;
   usage: Record<string, unknown> | null;
   provider_response: Record<string, unknown> | null;
+  task_prompt: string | null;
+  task_result: {
+    ecommerce_analysis?: Record<string, unknown> | null;
+    series_plan?: {
+      source?: string;
+      style_guide?: string;
+      items?: { index: number; title: string; copy: string; prompt: string }[];
+    };
+    [key: string]: unknown;
+  } | null;
+  task_request: {
+    ecommerce?: {
+      product_name: string;
+      materials: string;
+      selling_points: string;
+      scenarios: string;
+      platform: string;
+      style: string;
+      extra_requirements: string;
+      analysis?: Record<string, unknown> | null;
+    };
+  } | null;
   error: string | null;
   published: boolean;
   published_inspiration_id: string | null;
@@ -415,6 +437,13 @@ export function publishHistory(id: string) {
 
 export function unpublishHistory(id: string) {
   return request<{ ok: boolean; item: HistoryItem }>(`/api/history/${id}/publish`, { method: 'DELETE' });
+}
+
+export function editHistoryImage(id: string, payload: GeneratePayload) {
+  return request<ImageTask>(`/api/history/${id}/edit`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function generateImage(payload: GeneratePayload) {

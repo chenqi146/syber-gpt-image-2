@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
-import { ArrowUp, Heart, ImagePlus, Grid, List, Maximize2, RefreshCw, Loader2, Search, Sparkles, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowUp, Heart, ImagePlus, Maximize2, RefreshCw, Loader2, Search, Sparkles, X } from 'lucide-react';
 import {
   editImage,
   favoriteInspiration,
-  generateEcommerceImages,
   generateImage,
   getConfig,
   getHistory,
@@ -20,103 +20,37 @@ import ImagePreviewModal from '../components/ImagePreviewModal';
 import MasonryGrid from '../components/MasonryGrid';
 import PromptEditorModal from '../components/PromptEditorModal';
 import { useHomeFeed } from '../homeFeed';
+import { groupHistoryItems, mergeHistoryItems } from '../historyGroups';
+import {
+  ASPECT_RATIO_OPTIONS,
+  IMAGE_COUNT_OPTIONS,
+  isSupportedImagePreset,
+  normalizeImageScale,
+  providerImageSize,
+  QUALITY_OPTIONS,
+  SIZE_LABELS,
+  SIZE_OPTIONS,
+} from '../imageOptions';
 import { useSite } from '../site';
 import { useTasks } from '../tasks';
+import GenerationSelect from '../components/GenerationSelect';
 
 const FEED_PAGE_SIZE = 24;
 const PROMPT_TRANSFER_KEY = 'joko_pending_prompt';
-const SIZE_OPTIONS = ['1K', '2K', '4K'];
-const IMAGE_COUNT_OPTIONS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
-const SIZE_LABELS: Record<string, string> = {
-  '1K': '1K (1080p)',
-  '2K': '2K (1440p)',
-  '4K': '4K (2160p)',
-};
-const ASPECT_RATIO_OPTIONS = ['1:1', '16:9', '9:16', '3:2', '2:3', '4:3', '3:4'];
-const QUALITY_OPTIONS = ['auto', 'low', 'medium', 'high'];
-const SIZE_PRESETS: Record<string, Record<string, string>> = {
-  '1K': {
-    '1:1': '1088x1088',
-    '16:9': '2048x1152',
-    '9:16': '1152x2048',
-    '3:2': '1632x1088',
-    '2:3': '1088x1632',
-    '4:3': '1472x1104',
-    '3:4': '1104x1472',
-  },
-  '2K': {
-    '1:1': '1440x1440',
-    '16:9': '2560x1440',
-    '9:16': '1440x2560',
-    '3:2': '2160x1440',
-    '2:3': '1440x2160',
-    '4:3': '1920x1440',
-    '3:4': '1440x1920',
-  },
-  '4K': {
-    '16:9': '3840x2160',
-    '9:16': '2160x3840',
-    '3:2': '3840x2560',
-    '2:3': '2560x3840',
-    '4:3': '3840x2880',
-    '3:4': '2880x3840',
-  },
-};
-const SIZE_BY_PRESET_VALUE = Object.fromEntries(
-  Object.entries(SIZE_PRESETS).flatMap(([scale, ratios]) =>
-    Object.values(ratios).map((size) => [size.toUpperCase(), scale]),
-  ),
-);
-
-type HomeGenerateTab = 'general' | 'ecommerce';
-
-function mergeHistory(items: HistoryItem[]) {
-  const merged = new Map<string, HistoryItem>();
-  for (const item of items) {
-    merged.set(item.id, item);
-  }
-  return [...merged.values()].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-}
 
 function groupHistoryForFeed(items: HistoryItem[]): FeedItem[] {
-  const groups = new Map<string, HistoryItem[]>();
-  const order: string[] = [];
-  for (const item of items) {
-    const key = item.task_id || item.id;
-    if (!groups.has(key)) {
-      groups.set(key, []);
-      order.push(key);
-    }
-    groups.get(key)!.push(item);
-  }
-
-  return order
-    .map((key) => {
-      const group = groups.get(key) || [];
-      const sorted = [...group].sort((a, b) => {
-        const batchDelta = (a.batch_index || 0) - (b.batch_index || 0);
-        if (batchDelta !== 0) return batchDelta;
-        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      });
-      const images = sorted
-        .filter((item) => item.image_url)
-        .map((item) => ({ id: item.id, url: item.image_url || '', prompt: item.prompt }));
-      const first = sorted[0];
-      if (!first || images.length === 0) {
-        return null;
-      }
-      return {
-        key: `history-${key}`,
-        id: `ID:${first.id.slice(0, 4).toUpperCase()}`,
-        img: images[0].url,
-        images,
-        prompt: first.prompt,
-        title: images.length > 1 ? `${first.mode.toUpperCase()} BATCH` : first.mode.toUpperCase(),
-        inspirationId: null,
-        favorited: false,
-      };
-    })
-    .filter((item): item is FeedItem => Boolean(item));
+  return groupHistoryItems(items)
+    .filter((group) => group.images.length > 0)
+    .map((group) => ({
+      key: `history-${group.key}`,
+      id: `ID:${group.first.id.slice(0, 4).toUpperCase()}`,
+      img: group.images[0].url,
+      images: group.images.map((image) => ({ id: image.id, url: image.url, prompt: image.prompt })),
+      prompt: group.taskPrompt,
+      title: group.title,
+      inspirationId: null,
+      favorited: false,
+    }));
 }
 
 type FeedItem = {
@@ -135,22 +69,10 @@ export default function Home() {
   const { t } = useSite();
   const { addTask, openDrawer, taskHistoryItems } = useTasks();
   const { state: feedState, patchState, setState: setFeedState } = useHomeFeed();
-  const [activeTab, setActiveTab] = useState<HomeGenerateTab>('general');
   const [promptValue, setPromptValue] = useState('');
   const [promptInstruction, setPromptInstruction] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [selectedPreviews, setSelectedPreviews] = useState<{ id: string; name: string; url: string }[]>([]);
-  const [ecommerceImage, setEcommerceImage] = useState<File | null>(null);
-  const [ecommercePreview, setEcommercePreview] = useState<{ name: string; url: string } | null>(null);
-  const [ecommerceForm, setEcommerceForm] = useState({
-    productName: '',
-    materials: '',
-    sellingPoints: '',
-    scenarios: '',
-    platform: '淘宝/抖音',
-    style: '高级、干净、统一电商详情页',
-    extraRequirements: '',
-  });
   const [imageScale, setImageScale] = useState('2K');
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [imageQuality, setImageQuality] = useState('auto');
@@ -197,16 +119,6 @@ export default function Home() {
       previews.forEach((preview) => URL.revokeObjectURL(preview.url));
     };
   }, [selectedFiles]);
-
-  useEffect(() => {
-    if (!ecommerceImage) {
-      setEcommercePreview(null);
-      return;
-    }
-    const preview = { name: ecommerceImage.name, url: URL.createObjectURL(ecommerceImage) };
-    setEcommercePreview(preview);
-    return () => URL.revokeObjectURL(preview.url);
-  }, [ecommerceImage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -356,11 +268,7 @@ export default function Home() {
 
   async function handleExecute() {
     const prompt = promptValue.trim();
-    if (activeTab === 'general' && !prompt) return;
-    if (activeTab === 'ecommerce' && !ecommerceImage) {
-      setError(t('home_ecom_missing_image'));
-      return;
-    }
+    if (!prompt) return;
     if (loading) return;
     setLoading(true);
     setError('');
@@ -371,31 +279,12 @@ export default function Home() {
       quality: imageQuality,
     };
     try {
-      let submittedTask;
-      if (activeTab === 'ecommerce') {
-        setMessage(t('home_ecom_sent'));
-        submittedTask = await generateEcommerceImages(
-          {
-            product_name: ecommerceForm.productName,
-            materials: ecommerceForm.materials,
-            selling_points: ecommerceForm.sellingPoints,
-            scenarios: ecommerceForm.scenarios,
-            platform: ecommerceForm.platform,
-            style: ecommerceForm.style,
-            extra_requirements: ecommerceForm.extraRequirements,
-            ...imageOptions,
-            n: requestedImageCount,
-          },
-          ecommerceImage!,
-        );
-      } else {
-        const isEditMode = selectedFiles.length > 0;
-        setMessage(isEditMode ? t('home_message_edit_sent') : t('home_message_generate_sent'));
-        submittedTask = isEditMode
-          ? await editImage({ prompt, ...imageOptions, n: requestedImageCount }, selectedFiles)
-          : await generateImage({ prompt, ...imageOptions, n: requestedImageCount });
-        setSelectedFiles([]);
-      }
+      const isEditMode = selectedFiles.length > 0;
+      setMessage(isEditMode ? t('home_message_edit_sent') : t('home_message_generate_sent'));
+      const submittedTask = isEditMode
+        ? await editImage({ prompt, ...imageOptions, n: requestedImageCount }, selectedFiles)
+        : await generateImage({ prompt, ...imageOptions, n: requestedImageCount });
+      setSelectedFiles([]);
       addTask(submittedTask);
       openDrawer();
       setMessage(submittedTask.status === 'running' ? t('home_message_processing') : t('home_message_queued'));
@@ -472,7 +361,7 @@ export default function Home() {
     setMessage(t('home_prompt_copied'));
   }
 
-  const mergedHistory = mergeHistory([
+  const mergedHistory = mergeHistoryItems([
     ...taskHistoryItems.filter((item) => item.status === 'succeeded' && Boolean(item.image_url)),
     ...history,
   ]);
@@ -514,31 +403,6 @@ export default function Home() {
     addReferenceFiles(Array.from(event.target.files || []));
     event.target.value = '';
   };
-  const setEcommerceMainImage = useCallback(
-    (files: File[]) => {
-      const imageFile = getDroppedImages(files)[0];
-      if (!imageFile) {
-        setError(t('home_ref_image_invalid'));
-        return;
-      }
-      setEcommerceImage(imageFile);
-      setError('');
-      setMessage(t('home_ecom_image_ready'));
-    },
-    [t],
-  );
-  const handleEcommerceImage = (event: ChangeEvent<HTMLInputElement>) => {
-    const files: File[] = [];
-    const fileList = event.target.files;
-    if (fileList) {
-      for (let index = 0; index < fileList.length; index += 1) {
-        const file = fileList.item(index);
-        if (file) files.push(file);
-      }
-    }
-    setEcommerceMainImage(files);
-    event.target.value = '';
-  };
   const handleReferenceDragOver = (event: DragEvent<HTMLDivElement>) => {
     if (!Array.from(event.dataTransfer.types).includes('Files')) {
       return;
@@ -556,18 +420,10 @@ export default function Home() {
     event.preventDefault();
     setDraggingReference(false);
     const files = Array.from(event.dataTransfer.files || []);
-    if (activeTab === 'ecommerce') {
-      setEcommerceMainImage(files);
-      return;
-    }
     addReferenceFiles(files);
   };
   const removeReferenceImage = (index: number) => {
     setSelectedFiles((current) => current.filter((_, currentIndex) => currentIndex !== index));
-  };
-  const removeEcommerceImage = () => {
-    setEcommerceImage(null);
-    setMessage(t('home_ecom_image_removed'));
   };
 
   return (
@@ -584,13 +440,13 @@ export default function Home() {
               : t('home_guest', { value: viewer?.guest_id?.slice(0, 8) || '--' })}
           </div>
         </div>
-        <div className="hidden sm:flex gap-2">
-          <button className="w-10 h-10 border border-outline-variant flex items-center justify-center text-outline-variant hover:text-primary hover:border-primary bg-surface-container-low transition-colors">
-            <Grid size={20} />
-          </button>
-          <button className="w-10 h-10 border border-outline-variant flex items-center justify-center text-outline-variant hover:text-primary hover:border-primary bg-surface-container-low transition-colors">
-            <List size={20} />
-          </button>
+        <div className="hidden min-w-[260px] grid-cols-2 gap-2 sm:grid">
+          <Link className="flex h-10 items-center justify-center border border-primary bg-primary/15 text-xs font-bold uppercase tracking-widest text-primary" to="/">
+            {t('home_tab_general')}
+          </Link>
+          <Link className="flex h-10 items-center justify-center border border-white/10 bg-black/30 text-xs font-bold uppercase tracking-widest text-white/50 transition-colors hover:border-secondary hover:text-secondary" to="/ecommerce">
+            {t('home_tab_ecommerce')}
+          </Link>
         </div>
       </div>
 
@@ -776,35 +632,10 @@ export default function Home() {
         onDragOver={handleReferenceDragOver}
         onDrop={handleReferenceDrop}
       >
-        <div className="mb-2 grid grid-cols-2 gap-2">
-          {([
-            ['general', t('home_tab_general')],
-            ['ecommerce', t('home_tab_ecommerce')],
-          ] as const).map(([key, label]) => (
-            <button
-              key={key}
-              className={`h-9 border text-xs font-bold uppercase tracking-[0.18em] transition-colors ${
-                activeTab === key
-                  ? 'border-primary bg-primary/15 text-primary'
-                  : 'border-white/10 bg-black/30 text-white/50 hover:border-white/20 hover:text-white'
-              }`}
-              type="button"
-              onClick={() => setActiveTab(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
         <div className="mb-2 flex min-w-0 items-center gap-3">
           <div className="flex shrink-0 items-center gap-2 border-r border-white/10 pr-3 text-[10px] text-white/50">
             <span className="h-2 w-2 rounded-full bg-secondary" />
-            {t('home_mode')}:{' '}
-            {activeTab === 'ecommerce'
-              ? t('home_tab_ecommerce')
-              : selectedFiles.length
-                ? t('home_mode_edit')
-                : t('home_mode_generate')}
+            {t('home_mode')}: {selectedFiles.length ? t('home_mode_edit') : t('home_mode_generate')}
           </div>
           <div className="hidden items-center gap-2 text-[10px] uppercase tracking-widest text-white/45 md:flex">
             <span>{SIZE_LABELS[imageScale] || imageScale}</span>
@@ -857,129 +688,58 @@ export default function Home() {
           </div>
         </div>
 
-        {activeTab === 'ecommerce' ? (
-          <div className="grid grid-cols-1 gap-2 lg:grid-cols-[168px_1fr_auto]">
-            <div className="min-w-0">
-              <input
-                ref={fileInputRef}
-                className="hidden"
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={handleEcommerceImage}
-              />
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="group relative flex h-24 w-full items-center justify-center overflow-hidden border border-dashed border-primary/25 bg-black transition-colors hover:bg-primary/5"
-                  title={t('home_ecom_product_image')}
-                >
-                  {ecommercePreview ? (
-                    <>
-                      <img alt={ecommercePreview.name} className="h-full w-full object-cover opacity-85" src={ecommercePreview.url} />
-                      <span className="absolute bottom-0 left-0 right-0 truncate bg-black/75 px-2 py-1 text-[9px] text-white/70">
-                        {ecommercePreview.name}
-                      </span>
-                    </>
-                  ) : (
-                    <div className="flex flex-col items-center gap-1 text-white/40 group-hover:text-primary">
-                      <ImagePlus size={22} />
-                      <span className="text-[10px] uppercase tracking-widest">{t('home_ecom_upload_tip')}</span>
-                    </div>
-                  )}
-                </button>
-                {ecommercePreview ? (
-                  <button
-                    type="button"
-                    className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center border border-white/15 bg-black/80 text-white/80 transition-colors hover:border-error hover:text-error"
-                    title={t('history_delete')}
-                    aria-label={t('history_delete')}
-                    onClick={removeEcommerceImage}
-                  >
-                    <X size={13} />
-                  </button>
-                ) : null}
-              </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+          <div className="min-w-0">
+            <textarea
+              value={promptValue}
+              onChange={(e) => setPromptValue(e.target.value)}
+              className="h-16 w-full resize-none border border-primary/20 bg-black p-2.5 text-sm text-primary shadow-inner focus:border-primary focus:outline-none placeholder:text-primary/20 md:h-20 md:p-3"
+              placeholder={t('home_placeholder')}
+            ></textarea>
+            <div className="mt-1 flex items-center justify-between gap-3 text-[8px] uppercase leading-none text-primary/40">
+              <button
+                className="flex items-center gap-1 text-primary/60 transition-colors hover:text-primary"
+                type="button"
+                onClick={() => setPromptEditorOpen(true)}
+                title={t('prompt_editor_expand')}
+              >
+                <Maximize2 size={10} />
+                {t('prompt_editor_expand')}
+              </button>
+              <span>UTF-8 // AI-GEN // [{promptValue.length}/8000]</span>
             </div>
-            <div className="grid min-w-0 grid-cols-2 gap-2 lg:grid-cols-3">
-              <CompactInput label={t('home_ecom_product_name')} value={ecommerceForm.productName} onChange={(value) => setEcommerceForm((current) => ({ ...current, productName: value }))} />
-              <CompactInput label={t('home_ecom_platform')} value={ecommerceForm.platform} onChange={(value) => setEcommerceForm((current) => ({ ...current, platform: value }))} />
-              <CompactInput label={t('home_ecom_style')} value={ecommerceForm.style} onChange={(value) => setEcommerceForm((current) => ({ ...current, style: value }))} />
-              <CompactInput label={t('home_ecom_materials')} value={ecommerceForm.materials} onChange={(value) => setEcommerceForm((current) => ({ ...current, materials: value }))} />
-              <CompactInput label={t('home_ecom_selling_points')} value={ecommerceForm.sellingPoints} onChange={(value) => setEcommerceForm((current) => ({ ...current, sellingPoints: value }))} />
-              <CompactInput label={t('home_ecom_scenarios')} value={ecommerceForm.scenarios} onChange={(value) => setEcommerceForm((current) => ({ ...current, scenarios: value }))} />
-              <label className="col-span-2 min-w-0 lg:col-span-3">
-                <span className="mb-0.5 block truncate text-[8px] uppercase tracking-[0.18em] text-white/40">{t('home_ecom_extra')}</span>
-                <input
-                  className="h-9 w-full border border-primary/20 bg-black px-2 text-xs text-primary outline-none transition-colors placeholder:text-primary/20 focus:border-primary"
-                  value={ecommerceForm.extraRequirements}
-                  onChange={(event) => setEcommerceForm((current) => ({ ...current, extraRequirements: event.target.value }))}
-                />
-              </label>
-            </div>
+          </div>
+
+          <div className="flex min-w-0 gap-2 sm:shrink-0">
+            <input
+              ref={fileInputRef}
+              className="hidden"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              onChange={handleReferenceImages}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="group relative flex h-12 w-14 shrink-0 cursor-pointer flex-col items-center justify-center border border-dashed border-primary/20 transition-colors hover:bg-primary/5 sm:h-16 md:h-20 md:w-16"
+              title={t('home_ref_image')}
+            >
+              <ImagePlus className="mb-1 h-5 w-5 text-white/30 transition-colors group-hover:text-primary" />
+              <span className="max-w-full truncate px-1 text-[8px] uppercase text-white/40 group-hover:text-primary">{t('home_ref_image')}</span>
+            </button>
             <button
               onClick={handleExecute}
-              disabled={loading || !ecommerceImage}
-              className="flex h-12 min-w-0 flex-1 flex-col items-center justify-center bg-primary text-black font-black shadow-[0_0_15px_rgba(0,243,255,0.4)] transition-transform hover:scale-95 disabled:opacity-40 disabled:hover:scale-100 lg:h-full lg:w-28 lg:flex-none"
+              disabled={loading || !promptValue.trim()}
+              className="flex h-12 min-w-0 flex-1 flex-col items-center justify-center bg-primary text-black font-black shadow-[0_0_15px_rgba(0,243,255,0.4)] transition-transform hover:scale-95 disabled:opacity-40 disabled:hover:scale-100 sm:h-16 sm:w-20 sm:flex-none md:h-20 md:w-28"
             >
               {loading ? <Loader2 className="animate-spin" size={22} /> : <span className="mb-[-4px] text-lg md:text-xl">{t('home_execute')}</span>}
-              <span className="text-[9px] italic opacity-70 md:text-[10px]">{t('home_tab_ecommerce')}</span>
+              <span className="text-[9px] italic opacity-70 md:text-[10px]">{selectedFiles.length ? t('home_edit') : t('home_generate')}</span>
             </button>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
-            <div className="min-w-0">
-              <textarea
-                value={promptValue}
-                onChange={(e) => setPromptValue(e.target.value)}
-                className="h-16 w-full resize-none border border-primary/20 bg-black p-2.5 text-sm text-primary shadow-inner focus:border-primary focus:outline-none placeholder:text-primary/20 md:h-20 md:p-3"
-                placeholder={t('home_placeholder')}
-              ></textarea>
-              <div className="mt-1 flex items-center justify-between gap-3 text-[8px] uppercase leading-none text-primary/40">
-                <button
-                  className="flex items-center gap-1 text-primary/60 transition-colors hover:text-primary"
-                  type="button"
-                  onClick={() => setPromptEditorOpen(true)}
-                  title={t('prompt_editor_expand')}
-                >
-                  <Maximize2 size={10} />
-                  {t('prompt_editor_expand')}
-                </button>
-                <span>UTF-8 // AI-GEN // [{promptValue.length}/8000]</span>
-              </div>
-            </div>
+        </div>
 
-            <div className="flex min-w-0 gap-2 sm:shrink-0">
-              <input
-                ref={fileInputRef}
-                className="hidden"
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                multiple
-                onChange={handleReferenceImages}
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="group relative flex h-12 w-14 shrink-0 cursor-pointer flex-col items-center justify-center border border-dashed border-primary/20 transition-colors hover:bg-primary/5 sm:h-16 md:h-20 md:w-16"
-                title={t('home_ref_image')}
-              >
-                <ImagePlus className="mb-1 h-5 w-5 text-white/30 transition-colors group-hover:text-primary" />
-                <span className="max-w-full truncate px-1 text-[8px] uppercase text-white/40 group-hover:text-primary">{t('home_ref_image')}</span>
-              </button>
-              <button
-                onClick={handleExecute}
-                disabled={loading || !promptValue.trim()}
-                className="flex h-12 min-w-0 flex-1 flex-col items-center justify-center bg-primary text-black font-black shadow-[0_0_15px_rgba(0,243,255,0.4)] transition-transform hover:scale-95 disabled:opacity-40 disabled:hover:scale-100 sm:h-16 sm:w-20 sm:flex-none md:h-20 md:w-28"
-              >
-                {loading ? <Loader2 className="animate-spin" size={22} /> : <span className="mb-[-4px] text-lg md:text-xl">{t('home_execute')}</span>}
-                <span className="text-[9px] italic opacity-70 md:text-[10px]">{selectedFiles.length ? t('home_edit') : t('home_generate')}</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'general' && selectedPreviews.length > 0 && (
+        {selectedPreviews.length > 0 && (
           <div className="mt-2 flex max-w-full gap-2 overflow-x-auto pb-1">
             {selectedPreviews.map((preview, index) => (
               <div key={preview.id} className="group/reference relative h-14 w-12 shrink-0 overflow-hidden border border-primary/20 bg-black">
@@ -1031,81 +791,4 @@ export default function Home() {
       ) : null}
     </div>
   );
-}
-
-function GenerationSelect({
-  label,
-  value,
-  options,
-  onChange,
-  isOptionDisabled,
-  getOptionLabel,
-  disabled = false,
-}: {
-  label: string;
-  value: string;
-  options: string[];
-  onChange: (value: string) => void;
-  isOptionDisabled?: (value: string) => boolean;
-  getOptionLabel?: (value: string) => string;
-  disabled?: boolean;
-}) {
-  return (
-    <label className="min-w-0">
-      <span className="mb-0.5 block truncate text-[8px] uppercase tracking-[0.18em] text-white/40">{label}</span>
-      <select
-        className="h-9 w-full border border-primary/20 bg-black px-2 text-xs uppercase text-primary outline-none transition-colors focus:border-primary"
-        value={value}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {options.map((option) => (
-          <option key={option} value={option} disabled={isOptionDisabled?.(option) || false}>
-            {getOptionLabel?.(option) || option}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function CompactInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return (
-    <label className="min-w-0">
-      <span className="mb-0.5 block truncate text-[8px] uppercase tracking-[0.18em] text-white/40">{label}</span>
-      <input
-        className="h-9 w-full border border-primary/20 bg-black px-2 text-xs text-primary outline-none transition-colors placeholder:text-primary/20 focus:border-primary"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </label>
-  );
-}
-
-function normalizeImageScale(value: string | undefined) {
-  const normalized = (value || '').trim().toUpperCase();
-  if (SIZE_OPTIONS.includes(normalized)) {
-    return normalized;
-  }
-  if (SIZE_BY_PRESET_VALUE[normalized]) {
-    return SIZE_BY_PRESET_VALUE[normalized];
-  }
-  if (/^1\d{3}x1\d{3}$/i.test(normalized)) {
-    return '1K';
-  }
-  if (/^2\d{3}x|x2\d{3}$/i.test(normalized)) {
-    return '2K';
-  }
-  if (/^[34]\d{3}x|x[34]\d{3}$/i.test(normalized)) {
-    return '4K';
-  }
-  return '2K';
-}
-
-function providerImageSize(scale: string, ratio: string) {
-  return SIZE_PRESETS[scale]?.[ratio] || SIZE_PRESETS['2K']['1:1'];
-}
-
-function isSupportedImagePreset(scale: string, ratio: string) {
-  return Boolean(SIZE_PRESETS[scale]?.[ratio]);
 }
