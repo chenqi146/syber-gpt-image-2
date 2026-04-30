@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -111,6 +112,15 @@ SERIES_PROMPT_PLANNER_SYSTEM_PROMPT = """你是 JokoAI 的系列图像提示词�
 7. 如果是改图模式，prompt 必须明确要求严格参考上传图片中的主体、材质、结构和外观，只改变本屏需要表达的场景、文案和布局。
 8. 画面中文字必须简洁、清晰、可读，避免乱码；标题和说明文案由你在 copy 字段中给出，并写入对应 prompt。
 9. 保持原提示词主要语言；中文输入输出中文，英文输入输出英文。"""
+
+ECOMMERCE_PRODUCT_ANALYZER_SYSTEM_PROMPT = """你是 JokoAI 的电商商品图识别分析师。
+用户会上传一张商品图，并提供商品名称、材质、卖点、平台和风格。你的任务是识别商品外观并输出可用于后续电商详情页生成的结构化信息。
+要求：
+1. 只输出 JSON，不要 Markdown、解释或代码块。
+2. JSON 格式必须是：{"product_type":"...","appearance":"...","visible_material":"...","colors":["..."],"shape":"...","details":["..."],"generation_constraints":"..."}。
+3. generation_constraints 要明确说明生成时必须保持商品主体、颜色、材质、比例、结构、轮廓一致。
+4. 不确定的信息不要编造，优先根据图片可见信息和用户输入综合判断。
+5. 中文输入输出中文，英文输入输出英文。"""
 
 
 class AuthSendVerifyCodeRequest(BaseModel):
@@ -804,6 +814,85 @@ def create_app(
         _schedule_image_task(raw_request.app, task["id"])
         return _public_image_task(db, viewer.owner_id, task)
 
+    @app.post("/api/ecommerce/generate")
+    async def ecommerce_generate(
+        image: Annotated[UploadFile, File()],
+        raw_request: Request,
+        product_name: Annotated[str, Form(max_length=300)] = "",
+        materials: Annotated[str, Form(max_length=1200)] = "",
+        selling_points: Annotated[str, Form(max_length=1600)] = "",
+        scenarios: Annotated[str, Form(max_length=1200)] = "",
+        platform: Annotated[str, Form(max_length=120)] = "",
+        style: Annotated[str, Form(max_length=800)] = "",
+        extra_requirements: Annotated[str, Form(max_length=1600)] = "",
+        model: Annotated[str | None, Form()] = None,
+        size: Annotated[str | None, Form()] = None,
+        aspect_ratio: Annotated[str | None, Form()] = None,
+        quality: Annotated[str | None, Form()] = None,
+        n: Annotated[int, Form(ge=1, le=9)] = 4,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        provider: OpenAICompatibleImageClient = Depends(_provider),
+    ) -> dict[str, Any]:
+        config = db.get_config(viewer.owner_id, settings, user_name=_viewer_name(viewer, settings))
+        saved_upload = await save_upload(settings, image)
+        prompt = _ecommerce_prompt_from_fields(
+            product_name=product_name,
+            materials=materials,
+            selling_points=selling_points,
+            scenarios=scenarios,
+            platform=platform,
+            style=style,
+            extra_requirements=extra_requirements,
+            image_count=n,
+        )
+        analysis = await _analyze_ecommerce_product(
+            provider,
+            config,
+            settings,
+            upload=saved_upload,
+            prompt=prompt,
+        )
+        fields = {
+            "model": model or config["model"],
+            "prompt": prompt,
+            "size": _provider_image_size(size or config["default_size"], aspect_ratio),
+            "quality": quality or config["default_quality"],
+            "n": str(n),
+            "response_format": "b64_json",
+        }
+        task = db.create_image_task(
+            viewer.owner_id,
+            {
+                "mode": "edit",
+                "prompt": prompt,
+                "model": fields["model"],
+                "size": fields["size"],
+                "aspect_ratio": aspect_ratio or "",
+                "quality": fields["quality"],
+                "request": {
+                    "fields": fields,
+                    "uploads": [saved_upload],
+                    "mask": None,
+                    "ecommerce": {
+                        "analysis": analysis,
+                        "product_name": product_name,
+                        "materials": materials,
+                        "selling_points": selling_points,
+                        "scenarios": scenarios,
+                        "platform": platform,
+                        "style": style,
+                        "extra_requirements": extra_requirements,
+                    },
+                },
+                "input_image_url": saved_upload["url"],
+                "input_image_path": saved_upload["path"],
+            },
+        )
+        _schedule_image_task(raw_request.app, task["id"])
+        return _public_image_task(db, viewer.owner_id, task)
+
     return app
 
 
@@ -1150,6 +1239,67 @@ def _series_prompt_planner_payload(
     }
 
 
+def _ecommerce_prompt_from_fields(
+    *,
+    product_name: str,
+    materials: str,
+    selling_points: str,
+    scenarios: str,
+    platform: str,
+    style: str,
+    extra_requirements: str,
+    image_count: int,
+) -> str:
+    parts = [
+        "根据上传的商品图片生成电商产品详情页系列图。",
+        f"商品名称：{product_name.strip() or '未填写'}",
+        f"材质/用料：{materials.strip() or '未填写'}",
+        f"核心卖点：{selling_points.strip() or '未填写'}",
+        f"使用场景：{scenarios.strip() or '未填写'}",
+        f"目标平台：{platform.strip() or '通用电商'}",
+        f"视觉风格：{style.strip() or '高级、干净、统一'}",
+        f"图片张数：{image_count} 张，每张作为详情页中的一个连续模块。",
+        "要求每一屏都有清晰标题和说明文案，字体样式、排版网格、色调和产品呈现方式保持一致。",
+        "每一屏内容不能重复，应分别覆盖主卖点、使用场景、材质细节、成分/结构、尺寸定制、百搭优势、细节工艺、信任背书或转化总结。",
+    ]
+    if extra_requirements.strip():
+        parts.append(f"额外要求：{extra_requirements.strip()}")
+    return "\n".join(parts)
+
+
+def _ecommerce_product_analyzer_payload(
+    *,
+    upload: dict[str, Any],
+    prompt: str,
+    settings: Settings,
+) -> dict[str, Any]:
+    path = Path(str(upload["path"]))
+    content_type = str(upload.get("content_type") or "image/png")
+    data_url = f"data:{content_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    return {
+        "model": settings.prompt_optimizer_model.strip(),
+        "messages": [
+            {"role": "system", "content": ECOMMERCE_PRODUCT_ANALYZER_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "请识别这张商品图，并结合以下电商详情页需求输出结构化商品分析。\n\n"
+                            f"{prompt}"
+                        ),
+                    },
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1200,
+        "stream": False,
+    }
+
+
 def _extract_chat_completion_text(provider_response: dict[str, Any]) -> str:
     choices = provider_response.get("choices") if isinstance(provider_response, dict) else None
     if not isinstance(choices, list) or not choices:
@@ -1213,6 +1363,37 @@ async def _plan_series_prompts(
     )
     plan["source"] = "fallback"
     return plan
+
+
+async def _analyze_ecommerce_product(
+    provider: OpenAICompatibleImageClient,
+    config: dict[str, Any],
+    settings: Settings,
+    *,
+    upload: dict[str, Any],
+    prompt: str,
+) -> dict[str, Any]:
+    try:
+        provider_response = await provider.chat_completion(
+            config,
+            _ecommerce_product_analyzer_payload(upload=upload, prompt=prompt, settings=settings),
+        )
+        parsed = _extract_json_object(_extract_chat_completion_text(provider_response))
+        if isinstance(parsed, dict):
+            parsed["source"] = "vision"
+            return parsed
+    except Exception:
+        pass
+    return {
+        "source": "fallback",
+        "product_type": "",
+        "appearance": "根据上传参考图保持商品主体、轮廓、颜色、材质和结构一致。",
+        "visible_material": "",
+        "colors": [],
+        "shape": "",
+        "details": [],
+        "generation_constraints": "严格参考上传商品图，保持同一商品主体、颜色、材质、比例、结构和轮廓一致。",
+    }
 
 
 def _parse_series_prompt_plan(text: str, image_count: int) -> dict[str, Any] | None:
@@ -1775,12 +1956,23 @@ async def _run_series_image_task(
     created_values: list[Any] = []
     partial_errors: list[dict[str, Any]] = []
     latest_for_plan = db.get_image_task_by_id(task_id) or task
+    ecommerce_analysis = None
+    ecommerce_context = request_payload.get("ecommerce")
+    if isinstance(ecommerce_context, dict):
+        ecommerce_analysis = ecommerce_context.get("analysis")
+    planning_prompt = latest_for_plan["prompt"]
+    if isinstance(ecommerce_analysis, dict):
+        planning_prompt = (
+            f"{planning_prompt}\n\n"
+            "商品图识别结果：\n"
+            f"{json.dumps(ecommerce_analysis, ensure_ascii=False)}"
+        )
     plan = await _plan_series_prompts(
         provider,
         config,
         settings,
         mode=latest_for_plan["mode"],
-        prompt=latest_for_plan["prompt"],
+        prompt=planning_prompt,
         image_count=image_count,
         model=latest_for_plan["model"],
         size=latest_for_plan["size"],
@@ -1790,7 +1982,7 @@ async def _run_series_image_task(
     plan_items = plan.get("items") if isinstance(plan, dict) else []
     if not isinstance(plan_items, list) or len(plan_items) != image_count:
         plan = _fallback_series_prompt_plan(
-            prompt=latest_for_plan["prompt"],
+            prompt=planning_prompt,
             mode=latest_for_plan["mode"],
             image_count=image_count,
             size=latest_for_plan["size"],
@@ -1806,6 +1998,7 @@ async def _run_series_image_task(
             "result": {
                 "count_requested": image_count,
                 "count_succeeded": 0,
+                "ecommerce_analysis": ecommerce_analysis,
                 "series_plan": _public_series_plan(plan),
                 "usage": [],
                 "partial_errors": [],
@@ -1870,6 +2063,7 @@ async def _run_series_image_task(
                     "result": {
                         "count_requested": image_count,
                         "count_succeeded": len(history_ids),
+                        "ecommerce_analysis": ecommerce_analysis,
                         "series_plan": _public_series_plan(plan),
                         "usage": usage_items,
                         "partial_errors": partial_errors,
@@ -1895,6 +2089,7 @@ async def _run_series_image_task(
                     "usage": usage_items,
                     "count_requested": image_count,
                     "count_succeeded": len(history_ids),
+                    "ecommerce_analysis": ecommerce_analysis,
                     "series_plan": _public_series_plan(plan),
                     "partial_errors": partial_errors,
                 },
@@ -1931,6 +2126,7 @@ async def _run_series_image_task(
                 "usage": None,
                 "count_requested": image_count,
                 "count_succeeded": 0,
+                "ecommerce_analysis": ecommerce_analysis,
                 "series_plan": _public_series_plan(plan),
                 "partial_errors": partial_errors,
             },

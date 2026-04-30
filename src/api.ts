@@ -176,6 +176,21 @@ export type PromptOptimizeResult = {
   usage: Record<string, unknown> | null;
 };
 
+export type EcommerceGeneratePayload = {
+  product_name?: string;
+  materials?: string;
+  selling_points?: string;
+  scenarios?: string;
+  platform?: string;
+  style?: string;
+  extra_requirements?: string;
+  model?: string;
+  size?: string;
+  aspect_ratio?: string;
+  quality?: string;
+  n?: number;
+};
+
 export type PublicAuthSettings = {
   registration_enabled: boolean;
   email_verify_enabled: boolean;
@@ -427,6 +442,27 @@ export function editImage(payload: GeneratePayload, images: File | File[]) {
   form.set('n', String(payload.n || 1));
   imageList.forEach((image) => form.append('image', image));
   return request<ImageTask>('/api/images/edit', {
+    method: 'POST',
+    body: form,
+  });
+}
+
+export function generateEcommerceImages(payload: EcommerceGeneratePayload, image: File) {
+  const form = new FormData();
+  form.set('image', image);
+  if (payload.product_name) form.set('product_name', payload.product_name);
+  if (payload.materials) form.set('materials', payload.materials);
+  if (payload.selling_points) form.set('selling_points', payload.selling_points);
+  if (payload.scenarios) form.set('scenarios', payload.scenarios);
+  if (payload.platform) form.set('platform', payload.platform);
+  if (payload.style) form.set('style', payload.style);
+  if (payload.extra_requirements) form.set('extra_requirements', payload.extra_requirements);
+  if (payload.model) form.set('model', payload.model);
+  if (payload.size) form.set('size', payload.size);
+  if (payload.aspect_ratio) form.set('aspect_ratio', payload.aspect_ratio);
+  if (payload.quality) form.set('quality', payload.quality);
+  form.set('n', String(payload.n || 4));
+  return request<ImageTask>('/api/ecommerce/generate', {
     method: 'POST',
     body: form,
   });

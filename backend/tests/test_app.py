@@ -51,6 +51,30 @@ class FakeProvider:
         self.chat_configs.append(dict(config))
         self.chat_payloads.append(payload)
         system_content = payload["messages"][0]["content"] if payload.get("messages") else ""
+        if "电商商品图识别分析师" in system_content:
+            return {
+                "id": "chatcmpl-ecommerce-vision-test",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "product_type": "抱枕芯",
+                                    "appearance": "白色方形蓬松抱枕芯",
+                                    "visible_material": "细腻磨毛布料",
+                                    "colors": ["奶油白"],
+                                    "shape": "方形",
+                                    "details": ["边角圆润", "表面柔软"],
+                                    "generation_constraints": "保持白色方形抱枕芯主体、颜色、比例和布料质感一致",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    }
+                ],
+                "usage": {"total_tokens": 18},
+            }
         if "系列图像提示词规划师" in system_content:
             user_content = payload["messages"][1]["content"]
             count = 1
@@ -546,6 +570,47 @@ def test_edit_fans_out_multi_image_requests_with_series_prompts(tmp_path: Path) 
         ]
         assert [len(images) for images in provider.edited_images] == [1, 1]
         assert [item["input_image_url"] for item in task["items"]]
+
+
+def test_ecommerce_generate_analyzes_product_and_creates_series_edit_task(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        client.put("/api/config", json={"api_key": "sk-test-123456"})
+
+        response = client.post(
+            "/api/ecommerce/generate",
+            data={
+                "product_name": "天鹅绒PP棉抱枕芯",
+                "materials": "天鹅绒填充，高密度磨毛布料",
+                "selling_points": "可定做尺寸，蓬松回弹",
+                "scenarios": "沙发、床头、办公休憩",
+                "platform": "淘宝",
+                "style": "奶油风电商详情页",
+                "n": "2",
+                "size": "1K",
+                "aspect_ratio": "9:16",
+            },
+            files={"image": ("product.png", b"fake-product", "image/png")},
+        )
+
+        assert response.status_code == 200
+        task = wait_for_task(client, response.json()["id"], attempts=120)
+        assert task["status"] == "succeeded"
+        assert task["mode"] == "edit"
+        assert task["result"]["ecommerce_analysis"]["source"] == "vision"
+        assert task["result"]["ecommerce_analysis"]["product_type"] == "抱枕芯"
+        assert task["result"]["series_plan"]["source"] == "planner"
+        assert len(task["items"]) == 2
+        assert len(provider.edited_fields) == 2
+        assert all(fields["size"] == "1152x2048" for fields in provider.edited_fields)
+        assert all(fields["n"] == 1 for fields in provider.edited_fields)
+        assert [item["input_image_url"] for item in task["items"]]
+        planner_messages = [
+            payload["messages"][1]["content"]
+            for payload in provider.chat_payloads
+            if "系列图像提示词规划师" in payload["messages"][0]["content"]
+        ]
+        assert planner_messages and "商品图识别结果" in planner_messages[-1]
 
 
 def test_account_includes_balance_and_stats(tmp_path: Path) -> None:

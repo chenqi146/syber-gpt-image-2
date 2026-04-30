@@ -15,6 +15,63 @@ function mergeHistory(items: HistoryItem[]) {
   return [...merged.values()].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
+type HistoryGroup = {
+  key: string;
+  first: HistoryItem;
+  items: HistoryItem[];
+  images: { id: string; url: string; prompt: string }[];
+  createdAt: string;
+  publishedCount: number;
+  allPublished: boolean;
+};
+
+function groupHistoryItems(items: HistoryItem[]) {
+  const groups = new Map<string, HistoryItem[]>();
+  const order: string[] = [];
+  for (const item of items) {
+    const key = item.task_id || item.id;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    groups.get(key)!.push(item);
+  }
+
+  return order
+    .map((key): HistoryGroup | null => {
+      const groupItems = groups.get(key) || [];
+      const sorted = [...groupItems].sort((a, b) => {
+        const batchDelta = (a.batch_index || 0) - (b.batch_index || 0);
+        if (batchDelta !== 0) return batchDelta;
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      });
+      const first = sorted[0];
+      if (!first) {
+        return null;
+      }
+      const images = sorted
+        .filter((item) => item.image_url)
+        .map((item) => ({ id: item.id, url: item.image_url || '', prompt: item.prompt }));
+      const publishableItems = sorted.filter((item) => item.status === 'succeeded' && Boolean(item.image_url));
+      const publishedCount = publishableItems.filter((item) => item.published).length;
+      const createdAt = sorted.reduce(
+        (latest, item) => (new Date(item.created_at).getTime() > new Date(latest).getTime() ? item.created_at : latest),
+        first.created_at,
+      );
+      return {
+        key,
+        first,
+        items: sorted,
+        images,
+        createdAt,
+        publishedCount,
+        allPublished: publishableItems.length > 0 && publishedCount === publishableItems.length,
+      };
+    })
+    .filter((group): group is HistoryGroup => Boolean(group))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
 const getColorClasses = (colorMode: string) => {
   if (colorMode === 'primary') {
     return {
@@ -44,7 +101,7 @@ export default function History() {
   const [removedIds, setRemovedIds] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [offset, setOffset] = useState(0);
-  const [previewItem, setPreviewItem] = useState<HistoryItem | null>(null);
+  const [previewItem, setPreviewItem] = useState<{ imageUrl: string | null; prompt: string } | null>(null);
   const [publishingIds, setPublishingIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -73,13 +130,15 @@ export default function History() {
     load(0, false);
   }, [viewer?.owner_id]);
 
-  async function handleDelete(id: string) {
-    await deleteHistory(id);
-    setItems((current) => current.filter((item) => item.id !== id));
-    setRemovedIds((current) => (current.includes(id) ? current : [...current, id]));
+  async function handleDelete(group: HistoryGroup) {
+    const ids = group.items.map((item) => item.id);
+    await Promise.all(ids.map((id) => deleteHistory(id)));
+    setItems((current) => current.filter((item) => !ids.includes(item.id)));
+    setRemovedIds((current) => [...new Set([...current, ...ids])]);
   }
 
-  async function handleRegenerate(item: HistoryItem) {
+  async function handleRegenerate(group: HistoryGroup) {
+    const item = group.first;
     setLoading(true);
     setError('');
     try {
@@ -88,6 +147,7 @@ export default function History() {
         size: item.size,
         aspect_ratio: item.aspect_ratio,
         quality: item.quality,
+        n: group.images.length > 1 ? group.images.length : undefined,
       });
       addTask(submittedTask);
       openDrawer();
@@ -108,23 +168,31 @@ export default function History() {
     });
   }
 
-  async function handleTogglePublish(item: HistoryItem) {
-    if (item.status !== 'succeeded' || !item.image_url) {
+  async function handleTogglePublish(group: HistoryGroup) {
+    const publishableItems = group.items.filter((item) => item.status === 'succeeded' && Boolean(item.image_url));
+    const targets = group.allPublished ? publishableItems : publishableItems.filter((item) => !item.published);
+    if (targets.length === 0) {
       return;
     }
     setError('');
-    setPublishingIds((current) => (current.includes(item.id) ? current : [...current, item.id]));
+    setPublishingIds((current) => (current.includes(group.key) ? current : [...current, group.key]));
     try {
-      const result = item.published ? await unpublishHistory(item.id) : await publishHistory(item.id);
-      replaceHistoryItem(result.item);
+      const results = await Promise.all(
+        targets.map((item) => (group.allPublished ? unpublishHistory(item.id) : publishHistory(item.id))),
+      );
+      for (const result of results) {
+        replaceHistoryItem(result.item);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setPublishingIds((current) => current.filter((id) => id !== item.id));
+      setPublishingIds((current) => current.filter((id) => id !== group.key));
     }
   }
 
-  const visibleItems = mergeHistory([...taskHistoryItems, ...items]).filter((item) => !removedIds.includes(item.id));
+  const visibleGroups = groupHistoryItems(
+    mergeHistory([...taskHistoryItems, ...items]).filter((item) => !removedIds.includes(item.id)),
+  );
 
   return (
     <div className="md:ml-64 px-6 md:px-12 py-8 max-w-[1440px] mx-auto min-h-screen pt-24 pb-12 bg-[radial-gradient(ellipse_at_top,var(--color-surface-container-high),var(--color-background))] font-mono">
@@ -160,24 +228,46 @@ export default function History() {
       {error && <div className="mb-6 border border-error/40 bg-error/10 p-4 text-error text-xs">{error}</div>}
 
       <MasonryGrid
-        items={visibleItems}
-        getKey={(item) => item.id}
-        renderItem={(item, index) => {
+        items={visibleGroups}
+        getKey={(group) => group.key}
+        renderItem={(group, index) => {
+          const item = group.first;
           const colors = getColorClasses(index % 2 === 0 ? 'primary' : 'secondary');
+          const isBatch = group.images.length > 1;
+          const previewImage = group.images[0]?.url || item.image_url;
+          const publishDisabled = publishingIds.includes(group.key) || group.images.length === 0;
           return (
           <div
             className={`overflow-hidden bg-black border border-white/10 ${colors.borderHover} transition-all duration-300`}
           >
-            {item.image_url ? (
+            {isBatch ? (
+              <div className="grid grid-cols-3 gap-1 bg-black p-1">
+                {group.images.map((image, imageIndex) => (
+                  <button
+                    key={image.id}
+                    className="relative aspect-square cursor-zoom-in overflow-hidden bg-black text-left"
+                    type="button"
+                    onClick={() => setPreviewItem({ imageUrl: image.url, prompt: image.prompt })}
+                  >
+                    <img
+                      alt={`${item.id}-${imageIndex + 1}`}
+                      className="h-full w-full object-cover opacity-95 transition-opacity duration-300 hover:opacity-100"
+                      loading="lazy"
+                      src={image.url}
+                    />
+                  </button>
+                ))}
+              </div>
+            ) : previewImage ? (
               <button
                 className="block w-full cursor-zoom-in bg-black text-left"
                 type="button"
-                onClick={() => setPreviewItem(item)}
+                onClick={() => setPreviewItem({ imageUrl: previewImage, prompt: item.prompt })}
               >
                 <img
                   alt={item.prompt}
                   className="block h-auto w-full opacity-95 transition-opacity duration-300 hover:opacity-100"
-                  src={item.image_url}
+                  src={previewImage}
                 />
               </button>
             ) : (
@@ -192,7 +282,12 @@ export default function History() {
                 <span>{formatDate(item.created_at)}</span>
                 <span>{item.size}</span>
                 {item.aspect_ratio ? <span>{item.aspect_ratio}</span> : null}
-                {item.published ? <span className="text-tertiary">{t('history_published')}</span> : null}
+                {isBatch ? <span>x{group.images.length}</span> : null}
+                {group.allPublished ? (
+                  <span className="text-tertiary">{t('history_published')}</span>
+                ) : group.publishedCount > 0 ? (
+                  <span className="text-tertiary">{t('history_published')} {group.publishedCount}/{group.images.length}</span>
+                ) : null}
               </div>
               <p className={`mb-3 line-clamp-3 text-sm ${colors.textId} transition-colors`}>
                 {item.prompt}
@@ -204,32 +299,32 @@ export default function History() {
                     : 'border-primary/30 bg-primary/10 text-primary hover:border-primary hover:bg-primary/20'
                 }`}
                 type="button"
-                onClick={() => handleTogglePublish(item)}
-                disabled={publishingIds.includes(item.id) || item.status !== 'succeeded' || !item.image_url}
+                onClick={() => handleTogglePublish(group)}
+                disabled={publishDisabled}
               >
-                {publishingIds.includes(item.id) ? <Loader2 className="animate-spin" size={14} /> : <Globe2 size={14} />}
-                {item.published ? t('history_unpublish_case') : t('history_publish_case')}
+                {publishingIds.includes(group.key) ? <Loader2 className="animate-spin" size={14} /> : <Globe2 size={14} />}
+                {group.allPublished ? t('history_unpublish_case') : t('history_publish_case')}
               </button>
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-[44px_44px_44px_1fr]">
                 <button
                   className="flex h-10 items-center justify-center border border-white/20 bg-white/5 text-white transition-all hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
                   type="button"
                   title={t('history_preview')}
-                  onClick={() => setPreviewItem(item)}
-                  disabled={!item.image_url}
+                  onClick={() => setPreviewItem({ imageUrl: previewImage || null, prompt: item.prompt })}
+                  disabled={!previewImage}
                 >
                   <Maximize2 size={14} />
                 </button>
                 <a
-                  href={item.image_url || '#'}
+                  href={previewImage || '#'}
                   download
-                  className={`flex h-10 items-center justify-center border border-white/20 bg-white/5 text-white transition-all hover:border-primary hover:text-primary ${item.image_url ? '' : 'pointer-events-none opacity-35'}`}
+                  className={`flex h-10 items-center justify-center border border-white/20 bg-white/5 text-white transition-all hover:border-primary hover:text-primary ${previewImage ? '' : 'pointer-events-none opacity-35'}`}
                   title={t('history_download')}
                 >
                   <Download size={14} />
                 </a>
                 <button
-                  onClick={() => handleDelete(item.id)}
+                  onClick={() => handleDelete(group)}
                   className="flex h-10 items-center justify-center border border-error/20 bg-error/5 text-error transition-all hover:bg-error/20"
                   title={t('history_delete')}
                   type="button"
@@ -237,7 +332,7 @@ export default function History() {
                   <Trash2 size={14} />
                 </button>
                 <button
-                  onClick={() => handleRegenerate(item)}
+                  onClick={() => handleRegenerate(group)}
                   className={`col-span-3 flex h-10 min-w-0 items-center justify-center gap-2 px-3 text-xs font-black uppercase sm:col-span-1 ${colors.btnBg} ${colors.btnText} ${colors.btnShadow} shadow-white/40 transition-all duration-300 hover:bg-white hover:border-white`}
                   type="button"
                 >
@@ -263,7 +358,7 @@ export default function History() {
       </div>
 
       <ImagePreviewModal
-        imageUrl={previewItem?.image_url || null}
+        imageUrl={previewItem?.imageUrl || null}
         alt={previewItem?.prompt || 'preview'}
         subtitle={previewItem?.prompt}
         onClose={() => setPreviewItem(null)}
