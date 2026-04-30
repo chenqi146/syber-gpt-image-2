@@ -712,6 +712,9 @@ def test_ecommerce_history_edit_uses_product_current_and_extra_references(tmp_pa
         assert response.status_code == 200
         source_task = wait_for_task(client, response.json()["id"], attempts=120)
         source_item = source_task["items"][0]
+        source_prompt = source_item["prompt"]
+        history_before = client.get("/api/history").json()["items"]
+        assert len(history_before) == 1
 
         edit_response = client.post(
             f"/api/history/{source_item['id']}/edit",
@@ -723,7 +726,16 @@ def test_ecommerce_history_edit_uses_product_current_and_extra_references(tmp_pa
         edit_task = wait_for_task(client, edit_response.json()["id"])
         assert edit_task["status"] == "succeeded"
         assert edit_task["prompt"] == "把这一屏改成材质特写，保留商品主体"
+        assert [item["id"] for item in edit_task["items"]] == [source_item["id"]]
         assert edit_task["items"][0]["input_image_url"] == source_item["input_image_url"]
+        assert edit_task["items"][0]["prompt"] == "把这一屏改成材质特写，保留商品主体"
+        assert edit_task["items"][0]["task_id"] == source_item["task_id"]
+        assert edit_task["items"][0]["task_request"]["ecommerce"]["product_name"] == "天鹅绒PP棉抱枕芯"
+        assert edit_task["items"][0]["image_url"] != source_item["image_url"]
+        assert edit_task["items"][0]["prompt"] != source_prompt
+        history_after = client.get("/api/history").json()["items"]
+        assert len(history_after) == 1
+        assert history_after[0]["id"] == source_item["id"]
         assert provider.edited_fields[-1]["prompt"].startswith("把这一屏改成材质特写，保留商品主体")
         assert "第一张图是原商品主图" in provider.edited_fields[-1]["prompt"]
         assert "额外上传的 1 张参考图" in provider.edited_fields[-1]["prompt"]
@@ -731,6 +743,8 @@ def test_ecommerce_history_edit_uses_product_current_and_extra_references(tmp_pa
         assert provider.edited_images[-1][0][0].endswith(".png")
         assert provider.edited_images[-1][1][0].endswith(".png")
         assert provider.edited_images[-1][2][0] == "scene.png"
+        ledger = client.get("/api/ledger").json()["items"]
+        assert ledger[0]["history_id"] == source_item["id"]
 
 
 def test_account_includes_balance_and_stats(tmp_path: Path) -> None:

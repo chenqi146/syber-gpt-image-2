@@ -750,6 +750,7 @@ def create_app(
                     "uploads": uploads,
                     "mask": None,
                     "source_history_id": history_id,
+                    "replace_history_id": history_id if isinstance(source_ecommerce, dict) else None,
                     "ecommerce": source_ecommerce if isinstance(source_ecommerce, dict) else None,
                 },
                 "input_image_url": primary_reference.get("url"),
@@ -2075,6 +2076,7 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
             raise ValueError(f"Unsupported task mode: {task['mode']}")
 
         latest_task = db.get_image_task_by_id(task_id) or task
+        replace_history_id = _replace_history_id_for_task(request_payload, latest_task)
         ledger_cost = await _resolve_image_ledger_cost(
             db,
             settings,
@@ -2101,6 +2103,7 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
             input_image_url=latest_task.get("input_image_url"),
             input_image_path=latest_task.get("input_image_path"),
             batch_index=0,
+            replace_history_id=replace_history_id,
         )
         db.update_image_task(
             task_id,
@@ -2414,6 +2417,19 @@ def _single_image_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return single
 
 
+def _replace_history_id_for_task(request_payload: dict[str, Any], task: dict[str, Any]) -> str | None:
+    if task.get("mode") != "edit":
+        return None
+    if _request_image_count(request_payload.get("fields") if isinstance(request_payload.get("fields"), dict) else {}) != 1:
+        return None
+    ecommerce = request_payload.get("ecommerce")
+    replace_history_id = str(request_payload.get("replace_history_id") or "").strip()
+    source_history_id = str(request_payload.get("source_history_id") or "").strip()
+    if isinstance(ecommerce, dict) and replace_history_id and replace_history_id == source_history_id:
+        return replace_history_id
+    return None
+
+
 async def _persist_image_response(
     db: Database,
     settings: Settings,
@@ -2431,6 +2447,7 @@ async def _persist_image_response(
     input_image_url: str | None = None,
     input_image_path: str | None = None,
     batch_index: int = 0,
+    replace_history_id: str | None = None,
 ) -> list[dict[str, Any]]:
     data = provider_response.get("data")
     if not isinstance(data, list) or not data:
@@ -2440,30 +2457,39 @@ async def _persist_image_response(
     for item in data:
         if not isinstance(item, dict):
             continue
-        history_id = uuid4().hex
-        saved = await save_provider_image(settings, history_id, item)
-        record = db.create_history(
-            owner_id,
-            {
-                "id": history_id,
-                "task_id": task_id,
-                "batch_index": batch_index + len(records),
-                "mode": mode,
-                "prompt": prompt,
-                "model": model,
-                "size": size,
-                "aspect_ratio": aspect_ratio,
-                "quality": quality,
-                "status": "succeeded",
-                "image_url": saved["url"],
-                "image_path": saved["path"],
-                "input_image_url": input_image_url,
-                "input_image_path": input_image_path,
-                "revised_prompt": item.get("revised_prompt"),
-                "usage": provider_response.get("usage"),
-                "provider_response": {"created": provider_response.get("created"), "source_url": saved.get("source_url")},
-            },
-        )
+        history_id = replace_history_id if replace_history_id and not records else uuid4().hex
+        storage_id = f"{history_id}-{uuid4().hex[:8]}" if replace_history_id and not records else history_id
+        saved = await save_provider_image(settings, storage_id, item)
+        history_payload = {
+            "id": history_id,
+            "task_id": task_id,
+            "batch_index": batch_index + len(records),
+            "mode": mode,
+            "prompt": prompt,
+            "model": model,
+            "size": size,
+            "aspect_ratio": aspect_ratio,
+            "quality": quality,
+            "status": "succeeded",
+            "image_url": saved["url"],
+            "image_path": saved["path"],
+            "input_image_url": input_image_url,
+            "input_image_path": input_image_path,
+            "revised_prompt": item.get("revised_prompt"),
+            "usage": provider_response.get("usage"),
+            "provider_response": {"created": provider_response.get("created"), "source_url": saved.get("source_url")},
+            "error": None,
+        }
+        if replace_history_id and not records:
+            update_payload = dict(history_payload)
+            update_payload.pop("id", None)
+            update_payload.pop("task_id", None)
+            update_payload.pop("batch_index", None)
+            record = db.update_history(owner_id, replace_history_id, update_payload)
+            if record is None:
+                raise ValueError("History item to replace was not found")
+        else:
+            record = db.create_history(owner_id, history_payload)
         db.add_ledger_entry(
             owner_id,
             {

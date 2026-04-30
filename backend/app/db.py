@@ -596,6 +596,49 @@ class Database:
             )
         return self.get_history(owner_id, record["id"])
 
+    def update_history(self, owner_id: str, history_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        allowed = {
+            "task_id",
+            "batch_index",
+            "mode",
+            "prompt",
+            "model",
+            "size",
+            "aspect_ratio",
+            "quality",
+            "status",
+            "image_url",
+            "image_path",
+            "input_image_url",
+            "input_image_path",
+            "revised_prompt",
+            "usage",
+            "provider_response",
+            "error",
+        }
+        updates: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key not in allowed:
+                continue
+            if key == "usage":
+                updates["usage_json"] = _json_or_none(value)
+            elif key == "provider_response":
+                updates["provider_response_json"] = _json_or_none(value)
+            else:
+                updates[key] = value
+        if not updates:
+            return self.get_history(owner_id, history_id)
+        updates["updated_at"] = utc_now()
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        with self.connect() as conn:
+            result = conn.execute(
+                f"UPDATE image_history SET {assignments} WHERE owner_id = ? AND id = ?",
+                (*updates.values(), owner_id, history_id),
+            )
+            if result.rowcount == 0:
+                return None
+        return self.get_history(owner_id, history_id)
+
     def get_history(self, owner_id: str, history_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
