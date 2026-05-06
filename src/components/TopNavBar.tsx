@@ -6,6 +6,7 @@ import { useAuth } from '../auth';
 import { useSite } from '../site';
 import { useTasks } from '../tasks';
 import AvatarBadge from './AvatarBadge';
+import ModelBadge from './ModelBadge';
 import jokoLogo from '../../joko.svg';
 
 export default function TopNavBar() {
@@ -62,14 +63,12 @@ export default function TopNavBar() {
           {mobileMenuOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
         <div className="flex items-center gap-4">
-          <img alt="joko-image" className="h-10 w-10 rounded-sm object-contain" src={jokoLogo} />
+          <img alt="joko-image2" className="h-10 w-10 rounded-sm object-contain" src={jokoLogo} />
           <div className="flex flex-col gap-1">
             <Link to="/" className="text-xl font-black tracking-tighter text-white hover:text-primary transition-colors sm:text-2xl">
-              joko-<span className="text-secondary">image</span>
+              joko-<span className="text-secondary">image2</span>
             </Link>
-            <div className="hidden w-fit border border-secondary/30 bg-secondary/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.25em] text-secondary sm:block">
-              JOKO-AI
-            </div>
+            <ModelBadge compact />
           </div>
         </div>
         <nav className="hidden md:flex gap-6">

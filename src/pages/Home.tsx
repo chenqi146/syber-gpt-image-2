@@ -18,6 +18,7 @@ import { useAuth } from '../auth';
 import { copyTextToClipboard } from '../clipboard';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import MasonryGrid from '../components/MasonryGrid';
+import ModelBadge from '../components/ModelBadge';
 import PromptEditorModal from '../components/PromptEditorModal';
 import { useHomeFeed } from '../homeFeed';
 import { groupHistoryItems, mergeHistoryItems } from '../historyGroups';
@@ -451,10 +452,13 @@ export default function Home() {
               <span className="w-4 h-[1px] bg-secondary"></span> {t('home_scan')}
            </div>
           <h1 className="text-4xl md:text-5xl text-on-surface font-bold tracking-tighter">{t('home_title')}</h1>
-          <div className="text-xs text-white/40 uppercase tracking-widest">
-            {viewer?.authenticated
-              ? t('home_owner', { value: viewer.user?.username || viewer.user?.email || '--' })
-              : t('home_guest', { value: viewer?.guest_id?.slice(0, 8) || '--' })}
+          <div className="flex flex-wrap items-center gap-3">
+            <ModelBadge />
+            <div className="text-xs uppercase tracking-widest text-white/40">
+              {viewer?.authenticated
+                ? t('home_owner', { value: viewer.user?.username || viewer.user?.email || '--' })
+                : t('home_guest', { value: viewer?.guest_id?.slice(0, 8) || '--' })}
+            </div>
           </div>
         </div>
         <div className="hidden min-w-[260px] grid-cols-2 gap-2 sm:grid">

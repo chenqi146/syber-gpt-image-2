@@ -16,6 +16,7 @@ import {
 import CompactInput from '../components/CompactInput';
 import GenerationSelect from '../components/GenerationSelect';
 import ImagePreviewModal from '../components/ImagePreviewModal';
+import ModelBadge from '../components/ModelBadge';
 import PromptEditorModal from '../components/PromptEditorModal';
 import { copyTextToClipboard } from '../clipboard';
 import { groupHistoryItems, HistoryGroup, mergeHistoryItems } from '../historyGroups';
@@ -423,7 +424,10 @@ export default function Ecommerce() {
             {t('ecom_tag')}
           </div>
           <h1 className="text-4xl font-bold tracking-tighter text-on-surface md:text-5xl">{t('ecom_title')}</h1>
-          <p className="mt-2 text-sm text-white/50">{t('ecom_subtitle')}</p>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <ModelBadge />
+            <p className="text-sm text-white/50">{t('ecom_subtitle')}</p>
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-2 md:w-[320px]">
           <Link className="flex h-10 items-center justify-center border border-primary/35 text-xs font-bold uppercase tracking-widest text-primary hover:bg-primary/10" to="/">
