@@ -29,6 +29,7 @@ import {
   SIZE_LABELS,
   SIZE_OPTIONS,
 } from '../imageOptions';
+import { createReferenceEntry, DEFAULT_REFERENCE_ROLE, REFERENCE_ROLE_OPTIONS, ReferenceImageEntry } from '../referenceImages';
 import { useSite } from '../site';
 import { useTasks } from '../tasks';
 
@@ -39,6 +40,10 @@ export default function Ecommerce() {
   const { addTask, openDrawer, taskHistoryItems } = useTasks();
   const [productImage, setProductImage] = useState<File | null>(null);
   const [productPreview, setProductPreview] = useState<{ name: string; url: string } | null>(null);
+  const [productReferenceRole, setProductReferenceRole] = useState(DEFAULT_REFERENCE_ROLE);
+  const [productReferenceNote, setProductReferenceNote] = useState('');
+  const [productReferences, setProductReferences] = useState<ReferenceImageEntry[]>([]);
+  const [productReferencePreviews, setProductReferencePreviews] = useState<{ id: string; name: string; url: string }[]>([]);
   const [form, setForm] = useState({
     productName: '',
     materials: '',
@@ -57,8 +62,8 @@ export default function Ecommerce() {
   const [previewItem, setPreviewItem] = useState<{ imageUrl: string | null; prompt: string; referenceUrl?: string | null } | null>(null);
   const [editingItem, setEditingItem] = useState<HistoryItem | null>(null);
   const [editPrompt, setEditPrompt] = useState('');
-  const [editReferenceFiles, setEditReferenceFiles] = useState<File[]>([]);
-  const [editReferencePreviews, setEditReferencePreviews] = useState<{ name: string; url: string }[]>([]);
+  const [editReferences, setEditReferences] = useState<ReferenceImageEntry[]>([]);
+  const [editReferencePreviews, setEditReferencePreviews] = useState<{ id: string; name: string; url: string }[]>([]);
   const [publishCopies, setPublishCopies] = useState<Record<string, EcommercePublishCopyResult>>({});
   const [publishCopyLoadingKey, setPublishCopyLoadingKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -69,6 +74,7 @@ export default function Ecommerce() {
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editReferenceInputRef = useRef<HTMLInputElement>(null);
+  const productReferenceInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,10 +107,24 @@ export default function Ecommerce() {
   }, [productImage]);
 
   useEffect(() => {
-    const previews = editReferenceFiles.map((file) => ({ name: file.name, url: URL.createObjectURL(file) }));
+    const previews = productReferences.map((reference) => ({
+      id: reference.id,
+      name: reference.file.name,
+      url: URL.createObjectURL(reference.file),
+    }));
+    setProductReferencePreviews(previews);
+    return () => previews.forEach((preview) => URL.revokeObjectURL(preview.url));
+  }, [productReferences]);
+
+  useEffect(() => {
+    const previews = editReferences.map((reference) => ({
+      id: reference.id,
+      name: reference.file.name,
+      url: URL.createObjectURL(reference.file),
+    }));
     setEditReferencePreviews(previews);
     return () => previews.forEach((preview) => URL.revokeObjectURL(preview.url));
-  }, [editReferenceFiles]);
+  }, [editReferences]);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -150,7 +170,20 @@ export default function Ecommerce() {
         setError(t('home_ref_image_invalid'));
         return;
       }
-      setEditReferenceFiles((current) => [...current, ...images].slice(0, 6));
+      setEditReferences((current) => [...current, ...images.map((file) => createReferenceEntry(file, '风格参考'))].slice(0, 6));
+      setError('');
+    },
+    [t],
+  );
+
+  const addProductReferenceFiles = useCallback(
+    (files: File[]) => {
+      const images = files.filter((file) => IMAGE_TYPES.includes(file.type));
+      if (images.length === 0) {
+        setError(t('home_ref_image_invalid'));
+        return;
+      }
+      setProductReferences((current) => [...current, ...images.map((file) => createReferenceEntry(file, '侧面'))].slice(0, 8));
       setError('');
     },
     [t],
@@ -163,6 +196,11 @@ export default function Ecommerce() {
 
   function handleEditReferenceChange(event: ChangeEvent<HTMLInputElement>) {
     addEditReferenceFiles(Array.from(event.target.files || []));
+    event.target.value = '';
+  }
+
+  function handleProductReferenceChange(event: ChangeEvent<HTMLInputElement>) {
+    addProductReferenceFiles(Array.from(event.target.files || []));
     event.target.value = '';
   }
 
@@ -192,6 +230,18 @@ export default function Ecommerce() {
     addEditReferenceFiles(Array.from(event.dataTransfer.files || []));
   }
 
+  function updateProductReference(index: number, patch: Partial<Pick<ReferenceImageEntry, 'role' | 'note'>>) {
+    setProductReferences((current) =>
+      current.map((reference, currentIndex) => (currentIndex === index ? { ...reference, ...patch } : reference)),
+    );
+  }
+
+  function updateEditReference(index: number, patch: Partial<Pick<ReferenceImageEntry, 'role' | 'note'>>) {
+    setEditReferences((current) =>
+      current.map((reference, currentIndex) => (currentIndex === index ? { ...reference, ...patch } : reference)),
+    );
+  }
+
   async function handleSubmit() {
     if (!productImage || loading) {
       if (!productImage) setError(t('home_ecom_missing_image'));
@@ -215,7 +265,19 @@ export default function Ecommerce() {
           quality: imageQuality,
           n: Math.max(1, Math.min(9, Number(imageCount) || 4)),
         },
-        productImage,
+        [
+          {
+            file: productImage,
+            role: productReferenceRole,
+            note: productReferenceNote,
+            primary: true,
+          },
+          ...productReferences.map((reference) => ({
+            file: reference.file,
+            role: reference.role,
+            note: reference.note,
+          })),
+        ],
       );
       addTask(task);
       openDrawer();
@@ -273,6 +335,10 @@ export default function Ecommerce() {
       const productName = ecommerce?.product_name?.trim() || group.title || 'product';
       const file = new File([blob], `${productName}.${extension}`, { type: contentType });
       setProductImage(file);
+      const referenceNotes = group.first.task_request?.reference_notes || [];
+      const primaryNote = referenceNotes.find((note) => note.primary) || referenceNotes[0];
+      setProductReferenceRole(primaryNote?.role || DEFAULT_REFERENCE_ROLE);
+      setProductReferenceNote(primaryNote?.note || '');
     } catch {
       setProductImage(null);
     }
@@ -281,7 +347,7 @@ export default function Ecommerce() {
   function beginEdit(item: HistoryItem) {
     setEditingItem(item);
     setEditPrompt(item.prompt);
-    setEditReferenceFiles([]);
+    setEditReferences([]);
   }
 
   async function submitEdit() {
@@ -294,12 +360,16 @@ export default function Ecommerce() {
         size: editingItem.size,
         aspect_ratio: editingItem.aspect_ratio,
         quality: editingItem.quality,
-      }, editReferenceFiles);
+      }, editReferences.map((reference) => ({
+        file: reference.file,
+        role: reference.role,
+        note: reference.note,
+      })));
       addTask(task);
       openDrawer();
       setEditingItem(null);
       setEditPrompt('');
-      setEditReferenceFiles([]);
+      setEditReferences([]);
       setMessage(t('home_message_edit_sent'));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -381,6 +451,14 @@ export default function Ecommerce() {
       >
         <div className="min-w-0">
           <input ref={fileInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleProductImageChange} />
+          <input
+            ref={productReferenceInputRef}
+            className="hidden"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            onChange={handleProductReferenceChange}
+          />
           <div className="relative">
             <button
               className="group relative flex h-32 w-full items-center justify-center overflow-hidden border border-dashed border-primary/25 bg-black hover:bg-primary/5"
@@ -412,6 +490,33 @@ export default function Ecommerce() {
               </button>
             ) : null}
           </div>
+          {productPreview ? (
+            <div className="mt-2 grid grid-cols-1 gap-1.5">
+              <label className="block">
+                <span className="mb-0.5 block text-[8px] uppercase tracking-widest text-white/35">{t('reference_role')}</span>
+                <select
+                  className="h-8 w-full border border-white/10 bg-black px-2 text-[10px] text-primary outline-none focus:border-primary"
+                  value={productReferenceRole}
+                  onChange={(event) => setProductReferenceRole(event.target.value)}
+                >
+                  {REFERENCE_ROLE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {t(option.labelKey)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-[8px] uppercase tracking-widest text-white/35">{t('reference_note')}</span>
+                <input
+                  className="h-8 w-full border border-white/10 bg-black px-2 text-[10px] text-white/75 outline-none placeholder:text-white/25 focus:border-primary"
+                  value={productReferenceNote}
+                  onChange={(event) => setProductReferenceNote(event.target.value)}
+                  placeholder={t('reference_note_placeholder')}
+                />
+              </label>
+            </div>
+          ) : null}
         </div>
 
         <div className="grid min-w-0 grid-cols-2 gap-2 lg:grid-cols-4">
@@ -433,6 +538,38 @@ export default function Ecommerce() {
               onChange={(event) => setForm((current) => ({ ...current, extraRequirements: event.target.value }))}
             />
           </label>
+          <div className="col-span-2 min-w-0 lg:col-span-4">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="text-[9px] uppercase tracking-widest text-white/35">{t('ecom_edit_references')}</div>
+              <button
+                className="flex h-8 shrink-0 items-center gap-2 border border-primary/35 px-3 text-[10px] font-bold uppercase tracking-widest text-primary hover:bg-primary/10"
+                type="button"
+                onClick={() => productReferenceInputRef.current?.click()}
+              >
+                <Paperclip size={13} />
+                {t('ecom_add_reference')}
+              </button>
+            </div>
+            {productReferencePreviews.length > 0 ? (
+              <div className="flex max-w-full gap-2 overflow-x-auto pb-1">
+                {productReferencePreviews.map((preview, index) => (
+                  <ReferenceImageEditor
+                    key={preview.id}
+                    preview={preview}
+                    role={productReferences[index]?.role || ''}
+                    note={productReferences[index]?.note || ''}
+                    onRoleChange={(role) => updateProductReference(index, { role })}
+                    onNoteChange={(note) => updateProductReference(index, { note })}
+                    onRemove={() => setProductReferences((current) => current.filter((_, currentIndex) => currentIndex !== index))}
+                    onPreview={() => setPreviewItem({ imageUrl: preview.url, prompt: preview.name })}
+                    t={t}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="border border-dashed border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-white/35">{t('ecom_edit_reference_tip')}</div>
+            )}
+          </div>
         </div>
 
         <button
@@ -510,7 +647,7 @@ export default function Ecommerce() {
         onClose={() => {
           setEditingItem(null);
           setEditPrompt('');
-          setEditReferenceFiles([]);
+          setEditReferences([]);
         }}
         onCopy={() => copyPrompt(editPrompt).catch(() => undefined)}
       />
@@ -552,16 +689,17 @@ export default function Ecommerce() {
             {editReferencePreviews.length > 0 ? (
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {editReferencePreviews.map((preview, index) => (
-                  <div key={`${preview.name}-${preview.url}`} className="relative h-16 w-16 shrink-0 overflow-hidden border border-white/10 bg-black">
-                    <img alt={preview.name} className="h-full w-full object-cover" src={preview.url} />
-                    <button
-                      className="absolute right-0 top-0 flex h-6 w-6 items-center justify-center bg-black/80 text-white/80 hover:text-error"
-                      type="button"
-                      onClick={() => setEditReferenceFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))}
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
+                  <ReferenceImageEditor
+                    key={preview.id}
+                    preview={preview}
+                    role={editReferences[index]?.role || ''}
+                    note={editReferences[index]?.note || ''}
+                    onRoleChange={(role) => updateEditReference(index, { role })}
+                    onNoteChange={(note) => updateEditReference(index, { note })}
+                    onRemove={() => setEditReferences((current) => current.filter((_, currentIndex) => currentIndex !== index))}
+                    onPreview={() => setPreviewItem({ imageUrl: preview.url, prompt: preview.name })}
+                    t={t}
+                  />
                 ))}
               </div>
             ) : null}
@@ -615,6 +753,69 @@ function ProjectCard({ group, onOpen, onDelete, t }: { key?: string; group: Hist
   );
 }
 
+function ReferenceImageEditor({
+  preview,
+  role,
+  note,
+  onRoleChange,
+  onNoteChange,
+  onRemove,
+  onPreview,
+  t,
+}: {
+  key?: string;
+  preview: { id: string; name: string; url: string };
+  role: string;
+  note: string;
+  onRoleChange: (role: string) => void;
+  onNoteChange: (note: string) => void;
+  onRemove: () => void;
+  onPreview: () => void;
+  t: (key: any, vars?: Record<string, string | number>) => string;
+}) {
+  return (
+    <div className="grid w-52 shrink-0 grid-cols-[64px_1fr] gap-2 border border-white/10 bg-black p-1.5">
+      <div className="relative h-24 overflow-hidden border border-white/10 bg-black">
+        <button className="h-full w-full cursor-zoom-in" type="button" onClick={onPreview}>
+          <img alt={preview.name} className="h-full w-full object-cover" src={preview.url} />
+        </button>
+        <button
+          className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center border border-white/15 bg-black/80 text-white/80 hover:border-error hover:text-error"
+          type="button"
+          onClick={onRemove}
+        >
+          <X size={12} />
+        </button>
+      </div>
+      <div className="min-w-0">
+        <label className="mb-1 block">
+          <span className="mb-0.5 block text-[8px] uppercase tracking-widest text-white/35">{t('reference_role')}</span>
+          <select
+            className="h-7 w-full border border-white/10 bg-black px-1 text-[10px] text-primary outline-none focus:border-primary"
+            value={role}
+            onChange={(event) => onRoleChange(event.target.value)}
+          >
+            {REFERENCE_ROLE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {t(option.labelKey)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-0.5 block text-[8px] uppercase tracking-widest text-white/35">{t('reference_note')}</span>
+          <input
+            className="h-7 w-full border border-white/10 bg-black px-1 text-[10px] text-white/75 outline-none placeholder:text-white/25 focus:border-primary"
+            value={note}
+            onChange={(event) => onNoteChange(event.target.value)}
+            placeholder={t('reference_note_placeholder')}
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function ProjectDetail({
   group,
   onPreview,
@@ -639,6 +840,7 @@ function ProjectDetail({
   t: (key: any, vars?: Record<string, string | number>) => string;
 }) {
   const referenceUrl = group.first.input_image_url;
+  const referenceNotes = group.first.task_request?.reference_notes || [];
   return (
     <>
       <div className="mb-5 grid grid-cols-1 gap-4 border border-primary/20 bg-black/50 p-4 md:grid-cols-[160px_1fr]">
@@ -661,6 +863,18 @@ function ProjectDetail({
             <span>{group.first.quality}</span>
             <span>x{group.images.length}</span>
           </div>
+          {referenceNotes.length > 0 ? (
+            <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
+              {referenceNotes.slice(0, 6).map((note) => (
+                <div key={`${note.index}-${note.url || note.role}`} className="border border-white/10 bg-white/[0.03] p-2">
+                  <div className="mb-1 text-[9px] uppercase tracking-widest text-secondary">
+                    {t('ecom_reference_image')} {Number(note.index) + 1} · {note.role}
+                  </div>
+                  <div className="line-clamp-2 text-xs leading-5 text-white/55">{note.note || t('reference_note_placeholder')}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
 

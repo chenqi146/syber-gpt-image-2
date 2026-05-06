@@ -596,6 +596,40 @@ def test_edit_persists_upload_and_result(tmp_path: Path) -> None:
         assert provider.edited_images[-1][1][0] == "style.png"
 
 
+def test_edit_reference_notes_are_sent_to_provider_and_history(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        client.put("/api/config", json={"api_key": "sk-test-123456"})
+
+        response = client.post(
+            "/api/images/edit",
+            data={
+                "prompt": "根据多角度参考图生成商品图",
+                "reference_notes": json.dumps(
+                    [
+                        {"index": 0, "role": "正面", "note": "保持正面轮廓和颜色"},
+                        {"index": 1, "role": "材质细节", "note": "只参考绒面质感"},
+                    ],
+                    ensure_ascii=False,
+                ),
+            },
+            files=[
+                ("image", ("front.png", b"fake-front", "image/png")),
+                ("image", ("material.png", b"fake-material", "image/png")),
+            ],
+        )
+
+        assert response.status_code == 200
+        task = wait_for_task(client, response.json()["id"])
+        item = task["items"][0]
+        prompt = provider.edited_fields[-1]["prompt"]
+        assert "参考图说明" in prompt
+        assert "图1：正面，保持正面轮廓和颜色" in prompt
+        assert "图2：材质细节，只参考绒面质感" in prompt
+        assert item["task_request"]["reference_notes"][0]["role"] == "正面"
+        assert item["task_request"]["reference_notes"][1]["note"] == "只参考绒面质感"
+
+
 def test_edit_fans_out_multi_image_requests_with_series_prompts(tmp_path: Path) -> None:
     provider = FakeProvider()
     with make_client(tmp_path, provider=provider) as client:
@@ -667,6 +701,56 @@ def test_ecommerce_generate_analyzes_product_and_creates_series_edit_task(tmp_pa
             if "系列图像提示词规划师" in payload["messages"][0]["content"]
         ]
         assert planner_messages and "商品图识别结果" in planner_messages[-1]
+
+
+def test_ecommerce_generate_analyzes_all_reference_angles(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        client.put("/api/config", json={"api_key": "sk-test-123456"})
+
+        response = client.post(
+            "/api/ecommerce/generate",
+            data={
+                "product_name": "青花汾20",
+                "reference_notes": json.dumps(
+                    [
+                        {"index": 0, "role": "正面", "primary": True},
+                        {"index": 1, "role": "侧面"},
+                    ],
+                    ensure_ascii=False,
+                ),
+                "n": "2",
+                "size": "1K",
+                "aspect_ratio": "1:1",
+            },
+            files=[
+                ("image", ("front.jpg", b"fake-front", "image/jpeg")),
+                ("reference_image", ("side.jpg", b"fake-side", "image/jpeg")),
+            ],
+        )
+
+        assert response.status_code == 200
+        task = wait_for_task(client, response.json()["id"], attempts=120)
+        assert task["status"] == "succeeded"
+        analyzer_payload = next(
+            payload
+            for payload in provider.chat_payloads
+            if "电商商品图识别分析师" in payload["messages"][0]["content"]
+        )
+        analyzer_content = analyzer_payload["messages"][1]["content"]
+        assert sum(1 for item in analyzer_content if item.get("type") == "image_url") == 2
+        analyzer_text = analyzer_content[0]["text"]
+        assert "图1：正面" in analyzer_text
+        assert "图2：侧面" in analyzer_text
+        planner_messages = [
+            payload["messages"][1]["content"]
+            for payload in provider.chat_payloads
+            if "系列图像提示词规划师" in payload["messages"][0]["content"]
+        ]
+        assert "图2：侧面" in planner_messages[-1]
+        assert all("图2：侧面" in fields["prompt"] for fields in provider.edited_fields)
+        assert len(provider.edited_images[-1]) == 2
+        assert task["items"][0]["task_request"]["reference_notes"][1]["role"] == "侧面"
 
 
 def test_history_item_can_be_used_as_single_edit_source(tmp_path: Path) -> None:

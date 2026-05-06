@@ -1368,11 +1368,24 @@ def _history_row(row: sqlite3.Row) -> dict[str, Any]:
 def _public_task_request_metadata(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
+    metadata: dict[str, Any] = {}
+    reference_notes = value.get("reference_notes")
+    if isinstance(reference_notes, list):
+        metadata["reference_notes"] = [
+            {
+                "index": item.get("index"),
+                "role": item.get("role") or "",
+                "note": item.get("note") or "",
+                "url": item.get("url") or "",
+                "primary": bool(item.get("primary")),
+                "explicit": bool(item.get("explicit")),
+            }
+            for item in reference_notes
+            if isinstance(item, dict)
+        ]
     ecommerce = value.get("ecommerce")
-    if not isinstance(ecommerce, dict):
-        return None
-    return {
-        "ecommerce": {
+    if isinstance(ecommerce, dict):
+        metadata["ecommerce"] = {
             "product_name": ecommerce.get("product_name") or "",
             "materials": ecommerce.get("materials") or "",
             "selling_points": ecommerce.get("selling_points") or "",
@@ -1382,7 +1395,7 @@ def _public_task_request_metadata(value: Any) -> dict[str, Any] | None:
             "extra_requirements": ecommerce.get("extra_requirements") or "",
             "analysis": ecommerce.get("analysis") if isinstance(ecommerce.get("analysis"), dict) else None,
         }
-    }
+    return metadata or None
 
 
 def _ledger_row(row: sqlite3.Row) -> dict[str, Any]:

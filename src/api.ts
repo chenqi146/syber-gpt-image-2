@@ -57,6 +57,7 @@ export type HistoryItem = {
     [key: string]: unknown;
   } | null;
   task_request: {
+    reference_notes?: ImageReferenceNote[];
     ecommerce?: {
       product_name: string;
       materials: string;
@@ -74,6 +75,15 @@ export type HistoryItem = {
   published_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ImageReferenceNote = {
+  index: number;
+  role: string;
+  note: string;
+  url?: string;
+  primary?: boolean;
+  explicit?: boolean;
 };
 
 export type ImageTask = {
@@ -181,6 +191,13 @@ export type GeneratePayload = {
   n?: number;
 };
 
+export type ImageReferenceInput = {
+  file: File;
+  role?: string;
+  note?: string;
+  primary?: boolean;
+};
+
 export type PromptOptimizePayload = {
   prompt: string;
   instruction?: string;
@@ -233,6 +250,8 @@ export type EcommerceGeneratePayload = {
   quality?: string;
   n?: number;
 };
+
+export type EcommerceReferenceImage = ImageReferenceInput;
 
 export type PublicAuthSettings = {
   registration_enabled: boolean;
@@ -460,7 +479,18 @@ export function unpublishHistory(id: string) {
   return request<{ ok: boolean; item: HistoryItem }>(`/api/history/${id}/publish`, { method: 'DELETE' });
 }
 
-export function editHistoryImage(id: string, payload: GeneratePayload, referenceImages: File[] = []) {
+function appendReferenceInputs(form: FormData, references: ImageReferenceInput[]) {
+  if (references.length === 0) return;
+  const notes = references.map((reference, index) => ({
+    index,
+    role: reference.role || '',
+    note: reference.note || '',
+  }));
+  form.set('reference_notes', JSON.stringify(notes));
+  references.forEach((reference) => form.append('image', reference.file));
+}
+
+export function editHistoryImage(id: string, payload: GeneratePayload, referenceImages: ImageReferenceInput[] = []) {
   if (referenceImages.length === 0) {
     return request<ImageTask>(`/api/history/${id}/edit`, {
       method: 'POST',
@@ -473,7 +503,7 @@ export function editHistoryImage(id: string, payload: GeneratePayload, reference
   if (payload.size) form.set('size', payload.size);
   if (payload.aspect_ratio) form.set('aspect_ratio', payload.aspect_ratio);
   if (payload.quality) form.set('quality', payload.quality);
-  referenceImages.forEach((image) => form.append('image', image));
+  appendReferenceInputs(form, referenceImages);
   return request<ImageTask>(`/api/history/${id}/edit`, {
     method: 'POST',
     body: form,
@@ -501,25 +531,39 @@ export function generateEcommercePublishCopy(payload: EcommercePublishCopyPayloa
   });
 }
 
-export function editImage(payload: GeneratePayload, images: File | File[]) {
+export function editImage(payload: GeneratePayload, images: File | File[] | ImageReferenceInput[]) {
   const form = new FormData();
-  const imageList = Array.isArray(images) ? images : [images];
+  const referenceList: ImageReferenceInput[] = Array.isArray(images)
+    ? images.map((image) => (image instanceof File ? { file: image } : image))
+    : [{ file: images }];
   form.set('prompt', payload.prompt);
   if (payload.model) form.set('model', payload.model);
   if (payload.size) form.set('size', payload.size);
   if (payload.aspect_ratio) form.set('aspect_ratio', payload.aspect_ratio);
   if (payload.quality) form.set('quality', payload.quality);
   form.set('n', String(payload.n || 1));
-  imageList.forEach((image) => form.append('image', image));
+  appendReferenceInputs(form, referenceList);
   return request<ImageTask>('/api/images/edit', {
     method: 'POST',
     body: form,
   });
 }
 
-export function generateEcommerceImages(payload: EcommerceGeneratePayload, image: File) {
+export function generateEcommerceImages(payload: EcommerceGeneratePayload, image: File | EcommerceReferenceImage[]) {
   const form = new FormData();
-  form.set('image', image);
+  const references: EcommerceReferenceImage[] = Array.isArray(image) ? image : [{ file: image, primary: true }];
+  const primaryIndex = Math.max(0, references.findIndex((reference) => reference.primary));
+  const primary = references[primaryIndex] || references[0];
+  form.set('image', primary.file);
+  const extraReferences = references.filter((_, index) => index !== primaryIndex);
+  const notes = references.map((reference, index) => ({
+    index,
+    role: reference.role || (index === primaryIndex ? '商品主图' : ''),
+    note: reference.note || '',
+    primary: index === primaryIndex,
+  }));
+  form.set('reference_notes', JSON.stringify(notes));
+  extraReferences.forEach((reference) => form.append('reference_image', reference.file));
   if (payload.product_name) form.set('product_name', payload.product_name);
   if (payload.materials) form.set('materials', payload.materials);
   if (payload.selling_points) form.set('selling_points', payload.selling_points);

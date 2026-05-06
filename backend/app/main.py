@@ -51,6 +51,7 @@ class HistoryEditRequest(BaseModel):
     size: str | None = Field(default=None, max_length=64)
     aspect_ratio: str | None = Field(default=None, max_length=32)
     quality: str | None = Field(default=None, max_length=32)
+    reference_notes: list[dict[str, Any]] | None = None
 
 
 class PromptOptimizeRequest(BaseModel):
@@ -136,13 +137,14 @@ SERIES_PROMPT_PLANNER_SYSTEM_PROMPT = """你是 JokoAI 的系列图像提示词�
 9. 保持原提示词主要语言；中文输入输出中文，英文输入输出英文。"""
 
 ECOMMERCE_PRODUCT_ANALYZER_SYSTEM_PROMPT = """你是 JokoAI 的电商商品图识别分析师。
-用户会上传一张商品图，并提供商品名称、材质、卖点、平台和风格。你的任务是识别商品外观并输出可用于后续电商详情页生成的结构化信息。
+用户会上传一张或多张商品参考图，并提供商品名称、材质、卖点、平台和风格。你的任务是综合识别商品外观并输出可用于后续电商详情页生成的结构化信息。
 要求：
 1. 只输出 JSON，不要 Markdown、解释或代码块。
 2. JSON 格式必须是：{"product_type":"...","appearance":"...","visible_material":"...","colors":["..."],"shape":"...","details":["..."],"generation_constraints":"..."}。
-3. generation_constraints 要明确说明生成时必须保持商品主体、颜色、材质、比例、结构、轮廓一致。
-4. 不确定的信息不要编造，优先根据图片可见信息和用户输入综合判断。
-5. 中文输入输出中文，英文输入输出英文。"""
+3. 如果有正面、侧面、背面、材质细节等多角度参考图，必须把它们合并理解为同一商品的完整外观，不得只依据第一张图。
+4. generation_constraints 要明确说明生成时必须保持商品主体、颜色、材质、比例、结构、轮廓一致，并保留多角度参考图中可见的关键侧面/背面/细节信息。
+5. 不确定的信息不要编造，优先根据图片可见信息和用户输入综合判断。
+6. 中文输入输出中文，英文输入输出英文。"""
 
 ECOMMERCE_PUBLISH_COPY_SYSTEM_PROMPT = """你是 JokoAI 的电商种草文案策划。
 用户会提供一个已生成的电商详情页项目参数。你的任务是为小红书/朋友圈/社媒发布生成独立标题和正文。
@@ -691,6 +693,7 @@ def create_app(
         size: Annotated[str | None, Form()] = None,
         aspect_ratio: Annotated[str | None, Form()] = None,
         quality: Annotated[str | None, Form()] = None,
+        reference_notes: Annotated[str | None, Form()] = None,
         viewer: ViewerContext = Depends(_viewer),
         db: Database = Depends(_db),
         settings: Settings = Depends(_settings),
@@ -702,6 +705,7 @@ def create_app(
             size=size,
             aspect_ratio=aspect_ratio,
             quality=quality,
+            reference_notes=reference_notes,
         )
         source = db.get_history(viewer.owner_id, history_id)
         if source is None:
@@ -711,20 +715,41 @@ def create_app(
             raise HTTPException(status_code=400, detail="History item has no stored image to edit")
         config = db.get_config(viewer.owner_id, settings, user_name=_viewer_name(viewer, settings))
         source_upload = load_stored_image_as_upload(str(image_path), source.get("image_url"))
-        uploads: list[dict[str, str]] = []
-        original_upload: dict[str, str] | None = None
+        uploads: list[dict[str, Any]] = []
+        original_upload: dict[str, Any] | None = None
         input_image_path = source.get("input_image_path")
         if input_image_path and str(input_image_path) != str(image_path) and Path(str(input_image_path)).exists():
-            original_upload = load_stored_image_as_upload(str(input_image_path), source.get("input_image_url"))
+            original_upload = {
+                **load_stored_image_as_upload(str(input_image_path), source.get("input_image_url")),
+                "reference_index": 0,
+                "reference_role": "原商品主图",
+                "reference_note": "商品身份、颜色、材质、结构和轮廓优先参考这张图。",
+                "reference_primary": True,
+            }
             uploads.append(original_upload)
-        uploads.append(source_upload)
-        extra_uploads = [await save_upload(settings, upload) for upload in (image or [])]
+        source_index = 1 if original_upload is not None else 0
+        uploads.append(
+            {
+                **source_upload,
+                "reference_index": source_index,
+                "reference_role": "当前成品图",
+                "reference_note": "版式、构图、文案层级、画面风格和待修改内容参考这张图。",
+                "reference_primary": original_upload is None,
+            }
+        )
+        extra_reference_notes = _normalize_reference_notes(edit_request.reference_notes, len(image or []))
+        extra_uploads = _attach_reference_notes(
+            [await save_upload(settings, upload) for upload in (image or [])],
+            extra_reference_notes,
+            start_index=source_index + 1,
+        )
         uploads.extend(extra_uploads)
         provider_prompt = _history_edit_provider_prompt(
             edit_request.prompt,
             has_product_reference=original_upload is not None,
-            extra_reference_count=len(extra_uploads),
+            extra_references=extra_uploads,
         )
+        task_reference_notes = _task_reference_notes(uploads)
         primary_reference = original_upload or source_upload
         source_task_request = source.get("task_request")
         source_ecommerce = source_task_request.get("ecommerce") if isinstance(source_task_request, dict) else None
@@ -752,6 +777,7 @@ def create_app(
                     "source_history_id": history_id,
                     "replace_history_id": history_id if isinstance(source_ecommerce, dict) else None,
                     "ecommerce": source_ecommerce if isinstance(source_ecommerce, dict) else None,
+                    "reference_notes": task_reference_notes,
                 },
                 "input_image_url": primary_reference.get("url"),
                 "input_image_path": primary_reference.get("path"),
@@ -919,16 +945,22 @@ def create_app(
         aspect_ratio: Annotated[str | None, Form()] = None,
         quality: Annotated[str | None, Form()] = None,
         n: Annotated[int, Form(ge=1, le=9)] = 1,
+        reference_notes: Annotated[str | None, Form()] = None,
         viewer: ViewerContext = Depends(_viewer),
         db: Database = Depends(_db),
         settings: Settings = Depends(_settings),
     ) -> dict[str, Any]:
         config = db.get_config(viewer.owner_id, settings, user_name=_viewer_name(viewer, settings))
-        saved_uploads = [await save_upload(settings, upload) for upload in image]
+        normalized_reference_notes = _normalize_reference_notes(_parse_reference_notes(reference_notes), len(image))
+        saved_uploads = _attach_reference_notes(
+            [await save_upload(settings, upload) for upload in image],
+            normalized_reference_notes,
+        )
         saved_mask = await save_upload(settings, mask) if mask else None
+        provider_prompt = _append_reference_notes_to_prompt(prompt, saved_uploads)
         fields = {
             "model": model or config["model"],
-            "prompt": prompt,
+            "prompt": provider_prompt,
             "size": _provider_image_size(size or config["default_size"], aspect_ratio),
             "quality": quality or config["default_quality"],
             "n": str(n),
@@ -947,6 +979,7 @@ def create_app(
                     "fields": fields,
                     "uploads": saved_uploads,
                     "mask": saved_mask,
+                    "reference_notes": _task_reference_notes(saved_uploads),
                 },
                 "input_image_url": saved_uploads[0]["url"] if saved_uploads else None,
                 "input_image_path": saved_uploads[0]["path"] if saved_uploads else None,
@@ -959,6 +992,7 @@ def create_app(
     async def ecommerce_generate(
         image: Annotated[UploadFile, File()],
         raw_request: Request,
+        reference_image: Annotated[list[UploadFile] | None, File()] = None,
         product_name: Annotated[str, Form(max_length=300)] = "",
         materials: Annotated[str, Form(max_length=1200)] = "",
         selling_points: Annotated[str, Form(max_length=1600)] = "",
@@ -971,13 +1005,22 @@ def create_app(
         aspect_ratio: Annotated[str | None, Form()] = None,
         quality: Annotated[str | None, Form()] = None,
         n: Annotated[int, Form(ge=1, le=9)] = 4,
+        reference_notes: Annotated[str | None, Form()] = None,
         viewer: ViewerContext = Depends(_viewer),
         db: Database = Depends(_db),
         settings: Settings = Depends(_settings),
         provider: OpenAICompatibleImageClient = Depends(_provider),
     ) -> dict[str, Any]:
         config = db.get_config(viewer.owner_id, settings, user_name=_viewer_name(viewer, settings))
-        saved_upload = await save_upload(settings, image)
+        reference_upload_files = reference_image or []
+        normalized_reference_notes = _normalize_reference_notes(_parse_reference_notes(reference_notes), 1 + len(reference_upload_files))
+        saved_upload = _attach_reference_notes([await save_upload(settings, image)], normalized_reference_notes[:1])[0]
+        extra_uploads = _attach_reference_notes(
+            [await save_upload(settings, upload) for upload in reference_upload_files],
+            normalized_reference_notes[1:],
+            start_index=1,
+        )
+        ecommerce_uploads = [saved_upload, *extra_uploads]
         prompt = _ecommerce_prompt_from_fields(
             product_name=product_name,
             materials=materials,
@@ -993,11 +1036,13 @@ def create_app(
             config,
             settings,
             upload=saved_upload,
+            uploads=ecommerce_uploads,
             prompt=prompt,
         )
+        provider_prompt = _append_reference_notes_to_prompt(_append_ecommerce_consistency_lock(prompt, analysis), ecommerce_uploads)
         fields = {
             "model": model or config["model"],
-            "prompt": _append_ecommerce_consistency_lock(prompt, analysis),
+            "prompt": provider_prompt,
             "size": _provider_image_size(size or config["default_size"], aspect_ratio),
             "quality": quality or config["default_quality"],
             "n": str(n),
@@ -1014,8 +1059,9 @@ def create_app(
                 "quality": fields["quality"],
                 "request": {
                     "fields": fields,
-                    "uploads": [saved_upload],
+                    "uploads": ecommerce_uploads,
                     "mask": None,
+                    "reference_notes": _task_reference_notes(ecommerce_uploads),
                     "ecommerce": {
                         "analysis": analysis,
                         "product_name": product_name,
@@ -1442,29 +1488,32 @@ def _ecommerce_prompt_from_fields(
 def _ecommerce_product_analyzer_payload(
     *,
     upload: dict[str, Any],
+    uploads: list[dict[str, Any]] | None = None,
     prompt: str,
     settings: Settings,
 ) -> dict[str, Any]:
-    path = Path(str(upload["path"]))
-    content_type = str(upload.get("content_type") or "image/png")
-    data_url = f"data:{content_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    reference_uploads = uploads or [upload]
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                "请综合识别这些商品参考图，并结合以下电商详情页需求输出结构化商品分析。\n"
+                "多张图代表同一个商品的不同角度或细节，必须合并为完整商品身份，不要只看第一张。\n\n"
+                f"{_reference_notes_text(reference_uploads)}\n\n"
+                f"{prompt}"
+            ),
+        }
+    ]
+    for reference in reference_uploads:
+        path = Path(str(reference["path"]))
+        content_type = str(reference.get("content_type") or "image/png")
+        data_url = f"data:{content_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        content.append({"type": "image_url", "image_url": {"url": data_url}})
     return {
         "model": settings.prompt_optimizer_model.strip(),
         "messages": [
             {"role": "system", "content": ECOMMERCE_PRODUCT_ANALYZER_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "请识别这张商品图，并结合以下电商详情页需求输出结构化商品分析。\n\n"
-                            f"{prompt}"
-                        ),
-                    },
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            },
+            {"role": "user", "content": content},
         ],
         "temperature": 0.2,
         "max_tokens": 1200,
@@ -1543,12 +1592,13 @@ async def _analyze_ecommerce_product(
     settings: Settings,
     *,
     upload: dict[str, Any],
+    uploads: list[dict[str, Any]] | None = None,
     prompt: str,
 ) -> dict[str, Any]:
     try:
         provider_response = await provider.chat_completion(
             config,
-            _ecommerce_product_analyzer_payload(upload=upload, prompt=prompt, settings=settings),
+            _ecommerce_product_analyzer_payload(upload=upload, uploads=uploads, prompt=prompt, settings=settings),
         )
         parsed = _extract_json_object(_extract_chat_completion_text(provider_response))
         if isinstance(parsed, dict):
@@ -1576,6 +1626,7 @@ async def _parse_history_edit_request(
     size: str | None,
     aspect_ratio: str | None,
     quality: str | None,
+    reference_notes: str | None = None,
 ) -> HistoryEditRequest:
     content_type = raw_request.headers.get("content-type", "").lower()
     if "application/json" in content_type:
@@ -1595,13 +1646,142 @@ async def _parse_history_edit_request(
                 "size": size,
                 "aspect_ratio": aspect_ratio,
                 "quality": quality,
+                "reference_notes": _parse_reference_notes(reference_notes),
             }
         )
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
-def _history_edit_provider_prompt(prompt: str, *, has_product_reference: bool, extra_reference_count: int) -> str:
+REFERENCE_ROLE_DEFAULTS = {
+    0: "主体/主图",
+    1: "参考图 2",
+    2: "参考图 3",
+    3: "参考图 4",
+    4: "参考图 5",
+    5: "参考图 6",
+}
+
+
+def _parse_reference_notes(value: str | None) -> list[dict[str, Any]]:
+    if not value:
+        return []
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    notes: list[dict[str, Any]] = []
+    for index, item in enumerate(payload[:12]):
+        if not isinstance(item, dict):
+            continue
+        raw_index = item.get("index")
+        try:
+            note_index = int(raw_index)
+        except (TypeError, ValueError):
+            note_index = index
+        notes.append(
+            {
+                "index": max(0, note_index),
+                "role": str(item.get("role") or "").strip()[:80],
+                "note": str(item.get("note") or "").strip()[:600],
+                "primary": bool(item.get("primary")),
+                "explicit": True,
+            }
+        )
+    return notes
+
+
+def _normalize_reference_notes(notes: list[dict[str, Any]] | None, count: int) -> list[dict[str, Any]]:
+    by_index: dict[int, dict[str, Any]] = {}
+    for item in notes or []:
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= index < count:
+            by_index[index] = item
+    normalized: list[dict[str, Any]] = []
+    for index in range(count):
+        item = by_index.get(index) or {}
+        role = str(item.get("role") or "").strip()
+        note = str(item.get("note") or "").strip()
+        normalized.append(
+            {
+                "index": index,
+                "role": role or REFERENCE_ROLE_DEFAULTS.get(index, f"参考图 {index + 1}"),
+                "note": note,
+                "primary": bool(item.get("primary")) or index == 0,
+                "explicit": index in by_index,
+            }
+        )
+    return normalized
+
+
+def _attach_reference_notes(
+    uploads: list[dict[str, str]],
+    notes: list[dict[str, Any]],
+    *,
+    start_index: int = 0,
+) -> list[dict[str, Any]]:
+    attached: list[dict[str, Any]] = []
+    for offset, upload in enumerate(uploads):
+        index = start_index + offset
+        note = notes[offset] if offset < len(notes) else {}
+        attached.append(
+            {
+                **upload,
+                "reference_index": index,
+                "reference_role": str(note.get("role") or REFERENCE_ROLE_DEFAULTS.get(index, f"参考图 {index + 1}")),
+                "reference_note": str(note.get("note") or ""),
+                "reference_primary": bool(note.get("primary")) or index == 0,
+                "reference_explicit": bool(note.get("explicit")),
+            }
+        )
+    return attached
+
+
+def _task_reference_notes(uploads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, upload in enumerate(uploads):
+        result.append(
+            {
+                "index": int(upload.get("reference_index") if upload.get("reference_index") is not None else index),
+                "role": str(upload.get("reference_role") or REFERENCE_ROLE_DEFAULTS.get(index, f"参考图 {index + 1}")),
+                "note": str(upload.get("reference_note") or ""),
+                "url": upload.get("url") or "",
+                "primary": bool(upload.get("reference_primary")) or index == 0,
+                "explicit": bool(upload.get("reference_explicit")) or bool(upload.get("reference_note")),
+            }
+        )
+    return result
+
+
+def _append_reference_notes_to_prompt(prompt: str, uploads: list[dict[str, Any]]) -> str:
+    text = _reference_notes_text(uploads)
+    if not text:
+        return prompt
+    return f"{prompt.strip()}\n\n{text}"
+
+
+def _reference_notes_text(uploads: list[dict[str, Any]]) -> str:
+    notes = [note for note in _task_reference_notes(uploads) if note.get("explicit")]
+    if not notes:
+        return ""
+    lines = [
+        "参考图说明：",
+        "请严格按每张参考图的用途理解。多张商品角度图共同定义同一个商品身份，正面、侧面、背面和细节都要纳入结构、轮廓、比例、包装信息和材质判断，不要只参考第一张。",
+    ]
+    for note in notes:
+        role = str(note.get("role") or f"参考图 {int(note.get('index') or 0) + 1}").strip()
+        content = str(note.get("note") or "").strip()
+        suffix = f"，{content}" if content else ""
+        lines.append(f"图{int(note.get('index') or 0) + 1}：{role}{suffix}。")
+    return "\n".join(lines)
+
+
+def _history_edit_provider_prompt(prompt: str, *, has_product_reference: bool, extra_references: list[dict[str, Any]]) -> str:
     rules = [
         "单图修改参考图规则：",
         "当前生成任务会基于已有成品图继续修改，必须保留原图的主体构图、商品/角色身份和视觉连续性。",
@@ -1618,9 +1798,9 @@ def _history_edit_provider_prompt(prompt: str, *, has_product_reference: bool, e
         )
     else:
         rules.append("第一张图是当前成品图，请以这张图为主要参考继续修改，不要无关重绘。")
-    if extra_reference_count > 0:
-        rules.append(f"额外上传的 {extra_reference_count} 张参考图只作为风格、场景、局部细节或材质补充，不得覆盖主商品/主成品身份。")
-    return f"{prompt.strip()}\n\n" + "\n".join(rules)
+    if extra_references:
+        rules.append(f"额外上传的 {len(extra_references)} 张参考图只作为指定用途补充，不得覆盖主商品/主成品身份。")
+    return _append_reference_notes_to_prompt(f"{prompt.strip()}\n\n" + "\n".join(rules), extra_references)
 
 
 def _append_ecommerce_consistency_lock(prompt: str, ecommerce_analysis: dict[str, Any] | None) -> str:
@@ -2207,6 +2387,7 @@ async def _run_series_image_task(
     ecommerce_context = request_payload.get("ecommerce")
     if isinstance(ecommerce_context, dict):
         ecommerce_analysis = ecommerce_context.get("analysis")
+    reference_note_prompt = _reference_notes_text(request_payload.get("uploads") or [])
     planning_prompt = latest_for_plan["prompt"]
     if isinstance(ecommerce_analysis, dict):
         planning_prompt = (
@@ -2214,6 +2395,8 @@ async def _run_series_image_task(
             "商品图识别结果：\n"
             f"{json.dumps(ecommerce_analysis, ensure_ascii=False)}"
         )
+    if reference_note_prompt:
+        planning_prompt = f"{planning_prompt}\n\n{reference_note_prompt}"
     plan = await _plan_series_prompts(
         provider,
         config,
@@ -2262,6 +2445,8 @@ async def _run_series_image_task(
             if isinstance(ecommerce_analysis, dict)
             else item_prompt
         )
+        if reference_note_prompt:
+            provider_item_prompt = f"{provider_item_prompt}\n\n{reference_note_prompt}"
         try:
             if latest_task["mode"] == "edit":
                 fields = request_payload.get("fields")

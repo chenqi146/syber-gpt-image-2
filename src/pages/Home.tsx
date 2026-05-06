@@ -21,6 +21,7 @@ import MasonryGrid from '../components/MasonryGrid';
 import PromptEditorModal from '../components/PromptEditorModal';
 import { useHomeFeed } from '../homeFeed';
 import { groupHistoryItems, mergeHistoryItems } from '../historyGroups';
+import { createReferenceEntry, REFERENCE_ROLE_OPTIONS, ReferenceImageEntry } from '../referenceImages';
 import {
   ASPECT_RATIO_OPTIONS,
   IMAGE_COUNT_OPTIONS,
@@ -71,7 +72,7 @@ export default function Home() {
   const { state: feedState, patchState, setState: setFeedState } = useHomeFeed();
   const [promptValue, setPromptValue] = useState('');
   const [promptInstruction, setPromptInstruction] = useState('');
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [selectedReferences, setSelectedReferences] = useState<ReferenceImageEntry[]>([]);
   const [selectedPreviews, setSelectedPreviews] = useState<{ id: string; name: string; url: string }[]>([]);
   const [imageScale, setImageScale] = useState('2K');
   const [aspectRatio, setAspectRatio] = useState('1:1');
@@ -111,16 +112,16 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const previews = selectedFiles.map((file, index) => ({
-      id: `${file.name}-${file.size}-${file.lastModified}-${index}`,
-      name: file.name,
-      url: URL.createObjectURL(file),
+    const previews = selectedReferences.map((reference) => ({
+      id: reference.id,
+      name: reference.file.name,
+      url: URL.createObjectURL(reference.file),
     }));
     setSelectedPreviews(previews);
     return () => {
       previews.forEach((preview) => URL.revokeObjectURL(preview.url));
     };
-  }, [selectedFiles]);
+  }, [selectedReferences]);
 
   useEffect(() => {
     let cancelled = false;
@@ -281,12 +282,19 @@ export default function Home() {
       quality: imageQuality,
     };
     try {
-      const isEditMode = selectedFiles.length > 0;
+      const isEditMode = selectedReferences.length > 0;
       setMessage(isEditMode ? t('home_message_edit_sent') : t('home_message_generate_sent'));
       const submittedTask = isEditMode
-        ? await editImage({ prompt, ...imageOptions, n: requestedImageCount }, selectedFiles)
+        ? await editImage(
+            { prompt, ...imageOptions, n: requestedImageCount },
+            selectedReferences.map((reference) => ({
+              file: reference.file,
+              role: reference.role,
+              note: reference.note,
+            })),
+          )
         : await generateImage({ prompt, ...imageOptions, n: requestedImageCount });
-      setSelectedFiles([]);
+      setSelectedReferences([]);
       addTask(submittedTask);
       openDrawer();
       setMessage(submittedTask.status === 'running' ? t('home_message_processing') : t('home_message_queued'));
@@ -397,7 +405,7 @@ export default function Home() {
         setError(t('home_ref_image_invalid'));
         return;
       }
-      setSelectedFiles((current) => [...current, ...imageFiles]);
+      setSelectedReferences((current) => [...current, ...imageFiles.map((file) => createReferenceEntry(file))].slice(0, 8));
       setGenerationPanelExpanded(true);
       setMessage(t('home_mode_edit'));
     },
@@ -427,7 +435,12 @@ export default function Home() {
     addReferenceFiles(files);
   };
   const removeReferenceImage = (index: number) => {
-    setSelectedFiles((current) => current.filter((_, currentIndex) => currentIndex !== index));
+    setSelectedReferences((current) => current.filter((_, currentIndex) => currentIndex !== index));
+  };
+  const updateReferenceImage = (index: number, patch: Partial<Pick<ReferenceImageEntry, 'role' | 'note'>>) => {
+    setSelectedReferences((current) =>
+      current.map((reference, currentIndex) => (currentIndex === index ? { ...reference, ...patch } : reference)),
+    );
   };
 
   return (
@@ -649,7 +662,7 @@ export default function Home() {
         <div className={`${generationPanelExpanded ? 'mb-2' : ''} flex min-w-0 items-center gap-2 md:gap-3`}>
           <div className="flex shrink-0 items-center gap-2 border-r border-white/10 pr-3 text-[10px] text-white/50">
             <span className="h-2 w-2 rounded-full bg-secondary" />
-            {t('home_mode')}: {selectedFiles.length ? t('home_mode_edit') : t('home_mode_generate')}
+            {t('home_mode')}: {selectedReferences.length ? t('home_mode_edit') : t('home_mode_generate')}
           </div>
           <div className="hidden items-center gap-2 text-[10px] uppercase tracking-widest text-white/45 md:flex">
             <span>{SIZE_LABELS[imageScale] || imageScale}</span>
@@ -786,7 +799,7 @@ export default function Home() {
                   className="flex h-12 min-w-0 flex-1 flex-col items-center justify-center bg-primary text-black font-black shadow-[0_0_15px_rgba(0,243,255,0.4)] transition-transform hover:scale-95 disabled:opacity-40 disabled:hover:scale-100 sm:h-16 sm:w-20 sm:flex-none md:h-20 md:w-28"
                 >
                   {loading ? <Loader2 className="animate-spin" size={22} /> : <span className="mb-[-4px] text-lg md:text-xl">{t('home_execute')}</span>}
-                  <span className="text-[9px] italic opacity-70 md:text-[10px]">{selectedFiles.length ? t('home_edit') : t('home_generate')}</span>
+                  <span className="text-[9px] italic opacity-70 md:text-[10px]">{selectedReferences.length ? t('home_edit') : t('home_generate')}</span>
                 </button>
               </div>
             </div>
@@ -796,23 +809,50 @@ export default function Home() {
         {selectedPreviews.length > 0 && (
           <div className="mt-2 flex max-w-full gap-2 overflow-x-auto pb-1">
             {selectedPreviews.map((preview, index) => (
-              <div key={preview.id} className="group/reference relative h-14 w-12 shrink-0 overflow-hidden border border-primary/20 bg-black">
-                <button
-                  type="button"
-                  className="h-full w-full cursor-zoom-in bg-black"
-                  title={preview.name}
-                  onClick={() => setPreviewItem({ imageUrl: preview.url, prompt: preview.name })}
-                >
-                  <img alt={preview.name} className="h-full w-full object-cover" src={preview.url} />
-                </button>
-                <button
-                  type="button"
-                  aria-label={t('modal_close')}
-                  className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center border border-white/15 bg-black/70 text-white/80 opacity-100 transition-colors hover:border-error hover:text-error sm:opacity-0 sm:group-hover/reference:opacity-100"
-                  onClick={() => removeReferenceImage(index)}
-                >
-                  <X size={12} />
-                </button>
+              <div key={preview.id} className="group/reference relative grid w-48 shrink-0 grid-cols-[56px_1fr] gap-2 border border-primary/20 bg-black p-1.5">
+                <div className="relative h-20 overflow-hidden border border-white/10 bg-black">
+                  <button
+                    type="button"
+                    className="h-full w-full cursor-zoom-in bg-black"
+                    title={preview.name}
+                    onClick={() => setPreviewItem({ imageUrl: preview.url, prompt: preview.name })}
+                  >
+                    <img alt={preview.name} className="h-full w-full object-cover" src={preview.url} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t('modal_close')}
+                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center border border-white/15 bg-black/70 text-white/80 opacity-100 transition-colors hover:border-error hover:text-error sm:opacity-0 sm:group-hover/reference:opacity-100"
+                    onClick={() => removeReferenceImage(index)}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+                <div className="min-w-0">
+                  <label className="mb-1 block">
+                    <span className="mb-0.5 block text-[8px] uppercase tracking-widest text-white/35">{t('reference_role')}</span>
+                    <select
+                      className="h-7 w-full border border-white/10 bg-black px-1 text-[10px] text-primary outline-none focus:border-primary"
+                      value={selectedReferences[index]?.role || ''}
+                      onChange={(event) => updateReferenceImage(index, { role: event.target.value })}
+                    >
+                      {REFERENCE_ROLE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {t(option.labelKey)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-[8px] uppercase tracking-widest text-white/35">{t('reference_note')}</span>
+                    <input
+                      className="h-7 w-full border border-white/10 bg-black px-1 text-[10px] text-white/75 outline-none placeholder:text-white/25 focus:border-primary"
+                      value={selectedReferences[index]?.note || ''}
+                      onChange={(event) => updateReferenceImage(index, { note: event.target.value })}
+                      placeholder={t('reference_note_placeholder')}
+                    />
+                  </label>
+                </div>
               </div>
             ))}
           </div>
