@@ -164,6 +164,8 @@ class Database:
                     inspiration_sources_json TEXT NOT NULL DEFAULT '[]',
                     provider_base_url TEXT NOT NULL DEFAULT '',
                     auth_base_url TEXT NOT NULL DEFAULT '',
+                    sub2api_admin_token TEXT NOT NULL DEFAULT '',
+                    sub2api_admin_jwt TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -193,6 +195,20 @@ class Database:
                     FOREIGN KEY(inspiration_id) REFERENCES inspiration_prompts(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS trial_grants (
+                    owner_id TEXT PRIMARY KEY,
+                    sub2api_user_id INTEGER NOT NULL UNIQUE,
+                    email TEXT NOT NULL DEFAULT '',
+                    key_id TEXT,
+                    key_hint TEXT NOT NULL DEFAULT '',
+                    quota_usd REAL NOT NULL DEFAULT 0,
+                    balance_granted_usd REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_owner_config_managed ON owner_config(managed_by_auth);
                 CREATE INDEX IF NOT EXISTS idx_user_sessions_owner_id ON user_sessions(owner_id);
                 CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
@@ -201,6 +217,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_inspiration_prompts_synced_at ON inspiration_prompts(synced_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_inspiration_prompts_section ON inspiration_prompts(section);
                 CREATE INDEX IF NOT EXISTS idx_inspiration_favorites_owner_created_at ON inspiration_favorites(owner_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_trial_grants_sub2api_user_id ON trial_grants(sub2api_user_id);
                 """
             )
             self._migrate_legacy_schema(conn, settings)
@@ -254,6 +271,10 @@ class Database:
             conn.execute("ALTER TABLE site_settings ADD COLUMN provider_base_url TEXT NOT NULL DEFAULT ''")
         if "auth_base_url" not in site_settings_columns:
             conn.execute("ALTER TABLE site_settings ADD COLUMN auth_base_url TEXT NOT NULL DEFAULT ''")
+        if "sub2api_admin_token" not in site_settings_columns:
+            conn.execute("ALTER TABLE site_settings ADD COLUMN sub2api_admin_token TEXT NOT NULL DEFAULT ''")
+        if "sub2api_admin_jwt" not in site_settings_columns:
+            conn.execute("ALTER TABLE site_settings ADD COLUMN sub2api_admin_jwt TEXT NOT NULL DEFAULT ''")
 
         self._ensure_site_settings(conn, settings)
 
@@ -446,6 +467,8 @@ class Database:
             "inspiration_sources_json",
             "provider_base_url",
             "auth_base_url",
+            "sub2api_admin_token",
+            "sub2api_admin_jwt",
         }
         if "inspiration_sources" in payload:
             payload = {
@@ -550,7 +573,9 @@ class Database:
             conn.execute("UPDATE image_tasks SET owner_id = ? WHERE owner_id = ?", (to_owner_id, from_owner_id))
             conn.execute("UPDATE ledger_entries SET owner_id = ? WHERE owner_id = ?", (to_owner_id, from_owner_id))
             conn.execute("UPDATE OR IGNORE inspiration_favorites SET owner_id = ? WHERE owner_id = ?", (to_owner_id, from_owner_id))
+            conn.execute("UPDATE OR IGNORE trial_grants SET owner_id = ?, updated_at = ? WHERE owner_id = ?", (to_owner_id, utc_now(), from_owner_id))
             conn.execute("DELETE FROM inspiration_favorites WHERE owner_id = ?", (from_owner_id,))
+            conn.execute("DELETE FROM trial_grants WHERE owner_id = ?", (from_owner_id,))
             conn.execute("DELETE FROM owner_config WHERE owner_id = ?", (from_owner_id,))
 
     def create_history(self, owner_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1084,6 +1109,75 @@ class Database:
             return
         with self.connect() as conn:
             conn.execute("DELETE FROM user_sessions WHERE id = ?", (session_id,))
+
+    def get_trial_grant(self, owner_id: str | None = None, sub2api_user_id: int | None = None) -> dict[str, Any] | None:
+        if not owner_id and sub2api_user_id is None:
+            return None
+        clause = "owner_id = ?"
+        value: Any = owner_id
+        if sub2api_user_id is not None:
+            clause = "sub2api_user_id = ?"
+            value = sub2api_user_id
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT * FROM trial_grants WHERE {clause}", (value,)).fetchone()
+        return dict(row) if row else None
+
+    def mark_trial_grant(
+        self,
+        *,
+        owner_id: str,
+        sub2api_user_id: int,
+        email: str,
+        key_id: str | None = None,
+        key_hint: str = "",
+        quota_usd: float = 0,
+        balance_granted_usd: float = 0,
+        status: str = "created",
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        record = {
+            "owner_id": owner_id,
+            "sub2api_user_id": sub2api_user_id,
+            "email": email,
+            "key_id": key_id,
+            "key_hint": key_hint,
+            "quota_usd": quota_usd,
+            "balance_granted_usd": balance_granted_usd,
+            "status": status,
+            "error": error,
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO trial_grants (
+                    owner_id, sub2api_user_id, email, key_id, key_hint, quota_usd,
+                    balance_granted_usd, status, error, created_at, updated_at
+                )
+                VALUES (
+                    :owner_id, :sub2api_user_id, :email, :key_id, :key_hint, :quota_usd,
+                    :balance_granted_usd, :status, :error, :created_at, :updated_at
+                )
+                ON CONFLICT(owner_id) DO UPDATE SET
+                    sub2api_user_id = excluded.sub2api_user_id,
+                    email = excluded.email,
+                    key_id = COALESCE(excluded.key_id, trial_grants.key_id),
+                    key_hint = COALESCE(NULLIF(excluded.key_hint, ''), trial_grants.key_hint),
+                    quota_usd = CASE WHEN excluded.quota_usd > 0 THEN excluded.quota_usd ELSE trial_grants.quota_usd END,
+                    balance_granted_usd = CASE
+                        WHEN excluded.balance_granted_usd > 0 THEN excluded.balance_granted_usd
+                        ELSE trial_grants.balance_granted_usd
+                    END,
+                    status = excluded.status,
+                    error = excluded.error,
+                    updated_at = excluded.updated_at
+                """,
+                record,
+            )
+            row = conn.execute("SELECT * FROM trial_grants WHERE owner_id = ?", (owner_id,)).fetchone()
+        return dict(row) if row else record
 
     def stats(self, owner_id: str) -> dict[str, Any]:
         with self.connect() as conn:

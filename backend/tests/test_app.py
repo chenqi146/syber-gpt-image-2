@@ -194,6 +194,7 @@ class FakeAuthClient:
         self.list_available_groups_base_urls: list[str] = []
         self.create_key_base_urls: list[str] = []
         self.list_usage_base_urls: list[str] = []
+        self.admin_balance_calls: list[dict[str, Any]] = []
         self.created_keys: list[dict[str, Any]] = []
         self.usage_logs: list[dict[str, Any]] = [
             {
@@ -262,6 +263,8 @@ class FakeAuthClient:
             "id": 99,
             "key": "sk-user-managed-123456",
             "name": payload["name"],
+            "quota": payload.get("quota", 0),
+            "expires_in_days": payload.get("expires_in_days"),
             "group": {"id": payload.get("group_id"), "name": "general-openai", "platform": "openai"},
             "status": "active",
         }
@@ -271,6 +274,26 @@ class FakeAuthClient:
     async def list_usage(self, base_url: str, access_token: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         self.list_usage_base_urls.append(base_url)
         return list(self.usage_logs)
+
+    async def admin_update_user_balance(
+        self,
+        base_url: str,
+        admin_token: str,
+        user_id: int,
+        payload: dict[str, Any],
+        *,
+        token_type: str = "api_key",
+    ) -> dict[str, Any]:
+        self.admin_balance_calls.append(
+            {
+                "base_url": base_url,
+                "admin_token": admin_token,
+                "user_id": user_id,
+                "payload": payload,
+                "token_type": token_type,
+            }
+        )
+        return {"id": user_id, "balance": payload["balance"]}
 
 
 def make_app(tmp_path: Path, auth_client: FakeAuthClient | None = None, provider: FakeProvider | None = None):
@@ -299,6 +322,14 @@ def make_app(tmp_path: Path, auth_client: FakeAuthClient | None = None, provider
         session_ttl_seconds=3600,
         guest_ttl_seconds=86400,
         cookie_secure=False,
+        trial_key_enabled=True,
+        trial_key_quota_usd=2,
+        trial_key_expires_days=30,
+        trial_key_name_prefix="joko-image2-trial",
+        trial_balance_grant_enabled=True,
+        trial_balance_usd=2,
+        sub2api_admin_token="",
+        sub2api_admin_jwt="",
     )
     app = create_app(settings=settings, provider=provider or FakeProvider(), auth_client=auth_client or FakeAuthClient())
     app.dependency_overrides[_db] = lambda: app.state.db
@@ -1013,6 +1044,119 @@ def test_login_binds_managed_key_with_default_group(tmp_path: Path) -> None:
         assert account["viewer"]["user"]["email"] == "demo@example.com"
         assert account["user"]["api_key_source"] == "managed"
         assert account["viewer"]["user"]["role"] == "admin"
+
+
+def test_register_creates_trial_key_with_quota(tmp_path: Path) -> None:
+    auth = FakeAuthClient()
+    with make_client(tmp_path, auth_client=auth) as client:
+        register = client.post("/api/auth/register", json={"email": "new@example.com", "password": "secret123"})
+
+        assert register.status_code == 200
+        assert auth.created_keys and auth.created_keys[0]["name"].startswith("joko-image2-trial")
+        assert auth.created_keys[0]["quota"] == 2
+        assert auth.created_keys[0]["expires_in_days"] == 30
+        assert auth.created_keys[0]["group"]["id"] == 12
+        assert auth.admin_balance_calls == []
+
+        grant = client.app.state.db.get_trial_grant(owner_id="user:7")
+        assert grant["status"] == "partial"
+        assert grant["quota_usd"] == 2
+        assert grant["balance_granted_usd"] == 0
+        assert "SUB2API_ADMIN_TOKEN" in grant["error"]
+
+        config = client.get("/api/config").json()
+        assert config["api_key_source"] == "managed"
+        assert config["api_key_hint"] == "sk-use...3456"
+
+
+def test_register_grants_trial_balance_when_admin_token_configured(tmp_path: Path) -> None:
+    auth = FakeAuthClient()
+    app = make_app(tmp_path, auth_client=auth)
+    app.state.settings = app.state.settings.__class__(
+        **{
+            **app.state.settings.__dict__,
+            "sub2api_admin_token": "admin-local-token",
+        }
+    )
+    with TestClient(app) as client:
+        register = client.post("/api/auth/register", json={"email": "new@example.com", "password": "secret123"})
+
+        assert register.status_code == 200
+        assert len(auth.created_keys) == 1
+        assert auth.admin_balance_calls == [
+            {
+                "base_url": "http://127.0.0.1:9878",
+                "admin_token": "admin-local-token",
+                "user_id": 7,
+                "payload": {
+                    "balance": 2,
+                    "operation": "add",
+                    "notes": "joko-image2 new user trial grant",
+                },
+                "token_type": "api_key",
+            }
+        ]
+        grant = app.state.db.get_trial_grant(owner_id="user:7")
+        assert grant["status"] == "created"
+        assert grant["balance_granted_usd"] == 2
+        assert grant["error"] is None
+
+
+def test_admin_can_configure_sub2api_admin_token_in_site_settings(tmp_path: Path) -> None:
+    auth = FakeAuthClient()
+    app = make_app(tmp_path, auth_client=auth)
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"email": "demo@example.com", "password": "secret123"})
+        assert login.status_code == 200
+
+        saved = client.put(
+            "/api/site-settings",
+            json={
+                "sub2api_admin_token": "admin-token-from-ui",
+                "sub2api_admin_jwt": "jwt-token-from-ui",
+            },
+        )
+
+        assert saved.status_code == 200
+        upstream = saved.json()["upstream"]
+        assert upstream["sub2api_admin_token_set"] is True
+        assert upstream["sub2api_admin_token_hint"] == "admin-...m-ui"
+        assert upstream["sub2api_admin_jwt_set"] is True
+        assert upstream["sub2api_admin_jwt_hint"] == "jwt-to...m-ui"
+
+        kept = client.put("/api/site-settings", json={"sub2api_admin_token": "", "sub2api_admin_jwt": ""})
+        kept_upstream = kept.json()["upstream"]
+        assert kept_upstream["sub2api_admin_token_set"] is True
+        assert kept_upstream["sub2api_admin_token_hint"] == "admin-...m-ui"
+        assert kept_upstream["sub2api_admin_jwt_set"] is True
+        assert kept_upstream["sub2api_admin_jwt_hint"] == "jwt-to...m-ui"
+
+
+def test_register_uses_site_configured_sub2api_admin_token(tmp_path: Path) -> None:
+    auth = FakeAuthClient()
+    app = make_app(tmp_path, auth_client=auth)
+    app.state.db.update_site_settings({"sub2api_admin_token": "admin-token-from-db"})
+    with TestClient(app) as client:
+        register = client.post("/api/auth/register", json={"email": "new@example.com", "password": "secret123"})
+
+        assert register.status_code == 200
+        assert auth.admin_balance_calls[0]["admin_token"] == "admin-token-from-db"
+        assert auth.admin_balance_calls[0]["token_type"] == "api_key"
+        grant = app.state.db.get_trial_grant(owner_id="user:7")
+        assert grant["status"] == "created"
+        assert grant["balance_granted_usd"] == 2
+
+
+def test_login_does_not_create_trial_key(tmp_path: Path) -> None:
+    auth = FakeAuthClient()
+    with make_client(tmp_path, auth_client=auth) as client:
+        login = client.post("/api/auth/login", json={"email": "demo@example.com", "password": "secret123"})
+
+        assert login.status_code == 200
+        assert auth.created_keys and auth.created_keys[0]["name"] == "cybergen-image"
+        assert auth.created_keys[0]["quota"] == 0
+        assert auth.admin_balance_calls == []
+        assert client.app.state.db.get_trial_grant(owner_id="user:7") is None
 
 
 def test_signed_in_user_can_override_key_and_clear_back_to_managed(tmp_path: Path) -> None:

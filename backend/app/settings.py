@@ -26,6 +26,13 @@ def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     backend_dir: Path
@@ -52,6 +59,14 @@ class Settings:
     session_ttl_seconds: int
     guest_ttl_seconds: int
     cookie_secure: bool
+    trial_key_enabled: bool
+    trial_key_quota_usd: float
+    trial_key_expires_days: int
+    trial_key_name_prefix: str
+    trial_balance_grant_enabled: bool
+    trial_balance_usd: float
+    sub2api_admin_token: str
+    sub2api_admin_jwt: str
     inspiration_source_urls: list[str] | None = None
 
     @classmethod
@@ -99,7 +114,15 @@ class Settings:
             guest_cookie_name=os.getenv("GUEST_COOKIE_NAME", "cybergen_guest"),
             session_ttl_seconds=int(os.getenv("SESSION_TTL_SECONDS", str(30 * 24 * 60 * 60))),
             guest_ttl_seconds=int(os.getenv("GUEST_TTL_SECONDS", str(365 * 24 * 60 * 60))),
-            cookie_secure=os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"},
+            cookie_secure=_env_bool("COOKIE_SECURE", False),
+            trial_key_enabled=_env_bool("TRIAL_KEY_ENABLED", True),
+            trial_key_quota_usd=float(os.getenv("TRIAL_KEY_QUOTA_USD", "2")),
+            trial_key_expires_days=int(os.getenv("TRIAL_KEY_EXPIRES_DAYS", os.getenv("TRIAL_KEY_EXPIRE_DAYS", "30"))),
+            trial_key_name_prefix=os.getenv("TRIAL_KEY_NAME_PREFIX", "joko-image2-trial"),
+            trial_balance_grant_enabled=_env_bool("TRIAL_BALANCE_GRANT_ENABLED", True),
+            trial_balance_usd=float(os.getenv("TRIAL_BALANCE_USD", "2")),
+            sub2api_admin_token=os.getenv("SUB2API_ADMIN_TOKEN", "").strip(),
+            sub2api_admin_jwt=os.getenv("SUB2API_ADMIN_JWT", "").strip(),
             inspiration_source_urls=source_urls,
         )
 

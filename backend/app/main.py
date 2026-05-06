@@ -209,6 +209,8 @@ class SiteSettingsUpdate(BaseModel):
     inspiration_sources: list[str] | None = None
     provider_base_url: str | None = None
     auth_base_url: str | None = None
+    sub2api_admin_token: str | None = Field(default=None, max_length=4096)
+    sub2api_admin_jwt: str | None = Field(default=None, max_length=4096)
 
 
 @dataclass
@@ -380,6 +382,11 @@ def create_app(
         for key in ("provider_base_url", "auth_base_url"):
             if key in updates:
                 updates[key] = _normalize_upstream_url(updates[key])
+        for key in ("sub2api_admin_token", "sub2api_admin_jwt"):
+            if key in updates:
+                updates[key] = str(updates[key] or "").strip()
+                if not updates[key]:
+                    updates.pop(key)
         return _public_site_settings(db.update_site_settings(updates), viewer, settings)
 
     @app.post("/api/auth/send-verify-code")
@@ -413,6 +420,7 @@ def create_app(
                 request,
                 response,
                 result,
+                grant_trial=True,
             )
             return {"ok": True, "viewer": viewer_payload}
         except ProviderError as exc:
@@ -1203,11 +1211,17 @@ def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext, 
         },
     }
     if viewer.is_admin:
+        admin_token = str(settings_data.get("sub2api_admin_token") or "").strip()
+        admin_jwt = str(settings_data.get("sub2api_admin_jwt") or "").strip()
         payload["upstream"] = {
             "provider_base_url": str(settings_data.get("provider_base_url") or ""),
             "auth_base_url": str(settings_data.get("auth_base_url") or ""),
             "effective_provider_base_url": _effective_provider_base_url(settings_data, settings),
             "effective_auth_base_url": _effective_auth_base_url(settings_data, settings),
+            "sub2api_admin_token_set": bool(admin_token or settings.sub2api_admin_token),
+            "sub2api_admin_token_hint": _mask_key(admin_token or settings.sub2api_admin_token),
+            "sub2api_admin_jwt_set": bool(admin_jwt or settings.sub2api_admin_jwt),
+            "sub2api_admin_jwt_hint": _mask_key(admin_jwt or settings.sub2api_admin_jwt),
         }
     return payload
 
@@ -1304,6 +1318,8 @@ async def _complete_auth_flow(
     request: Request,
     response: Response,
     auth_result: dict[str, Any],
+    *,
+    grant_trial: bool = False,
 ) -> dict[str, Any]:
     access_token = str(auth_result.get("access_token") or "").strip()
     user = auth_result.get("user")
@@ -1315,7 +1331,18 @@ async def _complete_auth_flow(
     display_name = str(user.get("username") or user.get("email") or f"user-{user_id}")
     auth_base_url = _site_auth_base_url(db, settings)
     provider_base_url = _site_provider_base_url(db, settings)
-    api_key = await _resolve_user_api_key(auth_client, auth_base_url, access_token)
+    api_key = await _resolve_auth_api_key(
+        db,
+        settings,
+        auth_client,
+        auth_base_url,
+        access_token,
+        owner_id=owner_id,
+        sub2api_user_id=user_id,
+        email=str(user.get("email") or ""),
+        display_name=display_name,
+        grant_trial=grant_trial,
+    )
 
     db.merge_owner_data(
         request.state.guest_owner_id,
@@ -1359,6 +1386,196 @@ async def _complete_auth_flow(
     )
 
 
+async def _resolve_auth_api_key(
+    db: Database,
+    settings: Settings,
+    auth_client: Sub2APIAuthClient,
+    auth_base_url: str,
+    access_token: str,
+    *,
+    owner_id: str,
+    sub2api_user_id: int,
+    email: str,
+    display_name: str,
+    grant_trial: bool,
+) -> str:
+    api_key: str | None = None
+    if grant_trial and settings.trial_key_enabled and settings.trial_key_quota_usd > 0:
+        api_key = await _resolve_trial_api_key(
+            db,
+            settings,
+            auth_client,
+            auth_base_url,
+            access_token,
+            owner_id=owner_id,
+            sub2api_user_id=sub2api_user_id,
+            email=email,
+            display_name=display_name,
+        )
+    if not api_key:
+        api_key = await _resolve_user_api_key(auth_client, auth_base_url, access_token)
+    if not grant_trial:
+        await _retry_partial_trial_balance(
+            db,
+            settings,
+            auth_client,
+            auth_base_url,
+            owner_id=owner_id,
+            sub2api_user_id=sub2api_user_id,
+            email=email,
+        )
+    return api_key
+
+
+async def _resolve_trial_api_key(
+    db: Database,
+    settings: Settings,
+    auth_client: Sub2APIAuthClient,
+    auth_base_url: str,
+    access_token: str,
+    *,
+    owner_id: str,
+    sub2api_user_id: int,
+    email: str,
+    display_name: str,
+) -> str | None:
+    existing_grant = db.get_trial_grant(owner_id=owner_id) or db.get_trial_grant(sub2api_user_id=sub2api_user_id)
+    if existing_grant and str(existing_grant.get("status") or "") != "failed":
+        current = db.get_config(owner_id, settings, user_name=display_name)
+        managed_key = str(current.get("managed_api_key") or "").strip()
+        if managed_key:
+            return managed_key
+
+    try:
+        keys = await auth_client.list_keys(auth_base_url, access_token)
+        selected = _select_trial_key(keys, settings.trial_key_name_prefix)
+        created = selected or await _create_trial_api_key(settings, auth_client, auth_base_url, access_token)
+        key = str(created.get("key") or "").strip()
+        if not key:
+            raise ProviderError(502, "JokoAI did not return a usable trial API key", created)
+
+        balance_granted, balance_error = await _grant_trial_balance(
+            settings,
+            auth_client,
+            auth_base_url,
+            sub2api_user_id,
+            db.get_site_settings(),
+        )
+        status = "created" if not balance_error else "partial"
+        if selected and not balance_granted and not balance_error:
+            status = "existing"
+        db.mark_trial_grant(
+            owner_id=owner_id,
+            sub2api_user_id=sub2api_user_id,
+            email=email,
+            key_id=str(created.get("id") or ""),
+            key_hint=_mask_key(key),
+            quota_usd=settings.trial_key_quota_usd,
+            balance_granted_usd=balance_granted,
+            status=status,
+            error=balance_error,
+        )
+        return key
+    except ProviderError as exc:
+        db.mark_trial_grant(
+            owner_id=owner_id,
+            sub2api_user_id=sub2api_user_id,
+            email=email,
+            quota_usd=settings.trial_key_quota_usd,
+            status="failed",
+            error=exc.message,
+        )
+        return None
+
+
+async def _create_trial_api_key(
+    settings: Settings,
+    auth_client: Sub2APIAuthClient,
+    auth_base_url: str,
+    access_token: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": f"{settings.trial_key_name_prefix}-{utc_now()[:10]}",
+        "quota": settings.trial_key_quota_usd,
+    }
+    if settings.trial_key_expires_days > 0:
+        payload["expires_in_days"] = settings.trial_key_expires_days
+    group_id = await _resolve_default_key_group_id(auth_client, auth_base_url, access_token)
+    if group_id is not None:
+        payload["group_id"] = group_id
+    return await auth_client.create_key(auth_base_url, access_token, payload)
+
+
+async def _retry_partial_trial_balance(
+    db: Database,
+    settings: Settings,
+    auth_client: Sub2APIAuthClient,
+    auth_base_url: str,
+    *,
+    owner_id: str,
+    sub2api_user_id: int,
+    email: str,
+) -> None:
+    grant = db.get_trial_grant(owner_id=owner_id) or db.get_trial_grant(sub2api_user_id=sub2api_user_id)
+    if not grant or str(grant.get("status") or "") != "partial":
+        return
+    if float(grant.get("balance_granted_usd") or 0) > 0:
+        return
+    balance_granted, balance_error = await _grant_trial_balance(
+        settings,
+        auth_client,
+        auth_base_url,
+        sub2api_user_id,
+        db.get_site_settings(),
+    )
+    if not balance_granted and not balance_error:
+        return
+    db.mark_trial_grant(
+        owner_id=owner_id,
+        sub2api_user_id=sub2api_user_id,
+        email=email or str(grant.get("email") or ""),
+        key_id=str(grant.get("key_id") or ""),
+        key_hint=str(grant.get("key_hint") or ""),
+        quota_usd=float(grant.get("quota_usd") or 0),
+        balance_granted_usd=balance_granted,
+        status="created" if balance_granted and not balance_error else "partial",
+        error=balance_error,
+    )
+
+
+async def _grant_trial_balance(
+    settings: Settings,
+    auth_client: Sub2APIAuthClient,
+    auth_base_url: str,
+    sub2api_user_id: int,
+    site_settings: dict[str, Any] | None = None,
+) -> tuple[float, str | None]:
+    if not settings.trial_balance_grant_enabled or settings.trial_balance_usd <= 0:
+        return 0, None
+    configured_admin_token = str((site_settings or {}).get("sub2api_admin_token") or settings.sub2api_admin_token).strip()
+    configured_admin_jwt = str((site_settings or {}).get("sub2api_admin_jwt") or settings.sub2api_admin_jwt).strip()
+    token = configured_admin_token or configured_admin_jwt
+    token_type = "api_key" if configured_admin_token else "jwt"
+    if not token:
+        return 0, "未配置 SUB2API_ADMIN_TOKEN 或 SUB2API_ADMIN_JWT，已创建试用 Key 但未自动赠送余额"
+    payload = {
+        "balance": settings.trial_balance_usd,
+        "operation": "add",
+        "notes": "joko-image2 new user trial grant",
+    }
+    try:
+        await auth_client.admin_update_user_balance(
+            auth_base_url,
+            token,
+            sub2api_user_id,
+            payload,
+            token_type=token_type,
+        )
+    except ProviderError as exc:
+        return 0, f"试用余额赠送失败：{exc.message}"
+    return settings.trial_balance_usd, None
+
+
 async def _resolve_user_api_key(
     auth_client: Sub2APIAuthClient,
     auth_base_url: str,
@@ -1378,6 +1595,22 @@ async def _resolve_user_api_key(
     if not key:
         raise HTTPException(status_code=502, detail="JokoAI did not return a usable API key")
     return key
+
+
+def _select_trial_key(keys: list[dict[str, Any]], name_prefix: str) -> dict[str, Any] | None:
+    prefix = name_prefix.strip().lower()
+    if not prefix:
+        return None
+    candidates = [
+        item
+        for item in keys
+        if isinstance(item.get("key"), str)
+        and item.get("key")
+        and str(item.get("name") or "").lower().startswith(prefix)
+    ]
+    if not candidates:
+        return None
+    return _select_existing_key(candidates)
 
 
 def _select_existing_key(keys: list[dict[str, Any]]) -> dict[str, Any] | None:

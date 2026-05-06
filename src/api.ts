@@ -287,6 +287,10 @@ export type SiteSettings = {
     auth_base_url: string;
     effective_provider_base_url: string;
     effective_auth_base_url: string;
+    sub2api_admin_token_set: boolean;
+    sub2api_admin_token_hint: string;
+    sub2api_admin_jwt_set: boolean;
+    sub2api_admin_jwt_hint: string;
   };
   viewer: {
     authenticated: boolean;
@@ -336,6 +340,8 @@ export function updateSiteSettings(payload: {
   inspiration_sources?: string[];
   provider_base_url?: string;
   auth_base_url?: string;
+  sub2api_admin_token?: string;
+  sub2api_admin_jwt?: string;
 }) {
   return request<SiteSettings>('/api/site-settings', {
     method: 'PUT',

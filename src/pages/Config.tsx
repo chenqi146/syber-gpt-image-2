@@ -46,6 +46,8 @@ export default function Config() {
     inspiration_sources: string;
     provider_base_url: string;
     auth_base_url: string;
+    sub2api_admin_token: string;
+    sub2api_admin_jwt: string;
   }>({
     default_locale: 'zh-CN',
     announcement_enabled: false,
@@ -54,6 +56,8 @@ export default function Config() {
     inspiration_sources: '',
     provider_base_url: '',
     auth_base_url: '',
+    sub2api_admin_token: '',
+    sub2api_admin_jwt: '',
   });
   const [saving, setSaving] = useState(false);
   const [siteSaving, setSiteSaving] = useState(false);
@@ -87,6 +91,8 @@ export default function Config() {
       inspiration_sources: (siteSettings.inspiration_sources || []).join('\n'),
       provider_base_url: siteSettings.upstream?.provider_base_url || '',
       auth_base_url: siteSettings.upstream?.auth_base_url || '',
+      sub2api_admin_token: '',
+      sub2api_admin_jwt: '',
     });
   }, [
     siteSettings?.default_locale,
@@ -178,6 +184,8 @@ export default function Config() {
         announcement_body: siteDraft.announcement_body.trim(),
         provider_base_url: siteDraft.provider_base_url.trim(),
         auth_base_url: siteDraft.auth_base_url.trim(),
+        sub2api_admin_token: siteDraft.sub2api_admin_token.trim() || undefined,
+        sub2api_admin_jwt: siteDraft.sub2api_admin_jwt.trim() || undefined,
         inspiration_sources: siteDraft.inspiration_sources
           .split('\n')
           .map((item) => item.trim())
@@ -476,6 +484,38 @@ export default function Config() {
                         </div>
                       </>
                     </Field>
+
+                    <Field label={t('site_admin_token')}>
+                      <>
+                        <input
+                          className="input-cyber"
+                          placeholder={siteSettings.upstream?.sub2api_admin_token_hint || 'admin-...'}
+                          type="password"
+                          value={siteDraft.sub2api_admin_token}
+                          onChange={(event) => setSiteDraft((current) => ({ ...current, sub2api_admin_token: event.target.value }))}
+                        />
+                        <div className="mt-1 text-[9px] uppercase tracking-widest text-white/30">
+                          {t('site_admin_token_saved', { value: siteSettings.upstream?.sub2api_admin_token_set ? siteSettings.upstream.sub2api_admin_token_hint || 'SET' : 'NONE' })}
+                        </div>
+                      </>
+                    </Field>
+
+                    <Field label={t('site_admin_jwt')}>
+                      <>
+                        <input
+                          className="input-cyber"
+                          placeholder={siteSettings.upstream?.sub2api_admin_jwt_hint || 'eyJ...'}
+                          type="password"
+                          value={siteDraft.sub2api_admin_jwt}
+                          onChange={(event) => setSiteDraft((current) => ({ ...current, sub2api_admin_jwt: event.target.value }))}
+                        />
+                        <div className="mt-1 text-[9px] uppercase tracking-widest text-white/30">
+                          {t('site_admin_token_saved', { value: siteSettings.upstream?.sub2api_admin_jwt_set ? siteSettings.upstream.sub2api_admin_jwt_hint || 'SET' : 'NONE' })}
+                        </div>
+                      </>
+                    </Field>
+
+                    <p className="text-[10px] leading-5 text-white/35">{t('site_admin_token_hint')}</p>
                   </div>
                 </div>
               ) : null}

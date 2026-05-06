@@ -78,6 +78,30 @@ class Sub2APIAuthClient:
             return [item for item in data if isinstance(item, dict)]
         return []
 
+    async def admin_update_user_balance(
+        self,
+        base_url: str,
+        admin_token: str,
+        user_id: int,
+        payload: dict[str, Any],
+        *,
+        token_type: str = "api_key",
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"json": payload}
+        if token_type == "jwt":
+            kwargs["access_token"] = admin_token
+        else:
+            kwargs["headers"] = {"x-api-key": admin_token}
+        data = await self._request(
+            base_url,
+            "POST",
+            f"/api/v1/admin/users/{user_id}/balance",
+            **kwargs,
+        )
+        if not isinstance(data, dict):
+            raise ProviderError(502, "JokoAI 返回的用户余额数据格式不正确", data)
+        return data
+
     async def _request(
         self,
         base_url: str,
