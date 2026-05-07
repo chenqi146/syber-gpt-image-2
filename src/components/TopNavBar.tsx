@@ -42,7 +42,6 @@ export default function TopNavBar() {
   const viewerLabel = viewer?.authenticated
     ? (viewer.user?.username || viewer.user?.email || 'USER')
     : t('home_guest', { value: viewer?.guest_id?.slice(0, 8) || '--' });
-  const rechargeUrl = 'https://ai.get-money.locker';
   const mobileNavItems = [
     { name: t('side_generate'), path: '/', icon: Zap },
     { name: t('side_ecommerce'), path: '/ecommerce', icon: ImagePlus },
@@ -51,6 +50,7 @@ export default function TopNavBar() {
     { name: t('side_account'), path: '/account', icon: UserCircle },
     { name: t('side_config'), path: '/config', icon: Terminal },
     { name: t('side_billing'), path: '/billing', icon: CreditCard },
+    { name: t('side_recharge'), path: '/recharge', icon: CreditCard },
   ];
 
   return (
@@ -160,14 +160,12 @@ export default function TopNavBar() {
           {siteSettings?.announcement.enabled ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-secondary" /> : null}
         </button>
 
-        <a
+        <Link
           className="hidden h-10 items-center border border-primary/30 px-4 text-[10px] font-bold uppercase tracking-widest text-primary transition-colors hover:bg-primary/10 lg:flex"
-          href={rechargeUrl}
-          rel="noreferrer"
-          target="_blank"
+          to="/recharge"
         >
           {t('top_recharge')}
-        </a>
+        </Link>
 
         {viewer?.authenticated ? (
           <button
@@ -232,14 +230,12 @@ export default function TopNavBar() {
           </nav>
 
           <div className="mt-4 grid grid-cols-2 gap-2">
-            <a
+            <Link
               className="flex h-11 items-center justify-center border border-secondary/35 bg-secondary/10 text-[10px] font-bold uppercase tracking-widest text-secondary transition-colors hover:bg-secondary/20"
-              href={rechargeUrl}
-              rel="noreferrer"
-              target="_blank"
+              to="/recharge"
             >
               {t('top_recharge')}
-            </a>
+            </Link>
             {viewer?.authenticated ? (
               <button
                 className="flex h-11 items-center justify-center gap-2 border border-secondary/35 text-[10px] uppercase tracking-widest text-secondary transition-colors hover:bg-secondary/10 disabled:cursor-not-allowed disabled:opacity-60"

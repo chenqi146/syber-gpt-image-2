@@ -8,6 +8,7 @@ import Favorites from './pages/Favorites';
 import Config from './pages/Config';
 import Account from './pages/Account';
 import Billing from './pages/Billing';
+import Recharge from './pages/Recharge';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import AnnouncementModal from './components/AnnouncementModal';
@@ -52,6 +53,12 @@ export default function App() {
           <>
             <SideNavBar />
             <Billing />
+          </>
+        } />
+        <Route path="/recharge" element={
+          <>
+            <SideNavBar />
+            <Recharge />
           </>
         } />
         <Route path="/login" element={<Login />} />

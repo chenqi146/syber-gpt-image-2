@@ -231,6 +231,9 @@ docker compose logs --tail=100 backend web
 | `SUB2API_BASE_URL` | `http://host.docker.internal:9878/v1` | OpenAI 兼容接口地址，生图、改图、提示词优化、余额使用 |
 | `SUB2API_AUTH_BASE_URL` | `http://host.docker.internal:9878` | sub2api 管理接口地址，注册、登录、Key、用量明细使用 |
 | `SUB2API_USAGE_PATH` | `/v1/usage` | 余额查询路径 |
+| `RECHARGE_URL` | `https://ai.get-money.locker` | 站内充值中心嵌套的充值页面地址 |
+
+充值入口会打开本站 `/recharge` 页面并用 iframe 嵌入 `RECHARGE_URL`。如果充值站点设置了 `X-Frame-Options` 或 CSP 禁止嵌入，页面会保留“新窗口打开充值站点”作为备用入口。管理员也可以在系统设置里覆盖充值中心地址。
 
 ### 新用户试用额度
 

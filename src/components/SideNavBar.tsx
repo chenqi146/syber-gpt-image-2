@@ -15,6 +15,7 @@ export default function SideNavBar() {
     { name: t('side_account'), path: '/account', icon: UserCircle },
     { name: t('side_config'), path: '/config', icon: Terminal },
     { name: t('side_billing'), path: '/billing', icon: CreditCard },
+    { name: t('side_recharge'), path: '/recharge', icon: CreditCard },
   ];
 
   return (

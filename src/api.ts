@@ -188,6 +188,100 @@ export type LedgerEntry = {
   created_at: string;
 };
 
+export type PaymentMethodLimit = {
+  daily_limit: number;
+  daily_used: number;
+  daily_remaining: number;
+  single_min: number;
+  single_max: number;
+  fee_rate: number;
+  available: boolean;
+};
+
+export type PaymentPlan = {
+  id: number;
+  group_id: number;
+  group_platform?: string;
+  group_name?: string;
+  rate_multiplier?: number;
+  daily_limit_usd?: number | null;
+  weekly_limit_usd?: number | null;
+  monthly_limit_usd?: number | null;
+  supported_model_scopes?: string[];
+  name: string;
+  description: string;
+  price: number;
+  original_price?: number;
+  validity_days: number;
+  validity_unit: string;
+  features: string[];
+  product_name: string;
+};
+
+export type PaymentCheckoutInfo = {
+  methods: Record<string, PaymentMethodLimit>;
+  global_min: number;
+  global_max: number;
+  plans: PaymentPlan[];
+  balance_disabled: boolean;
+  help_text: string;
+  help_image_url: string;
+  stripe_publishable_key: string;
+};
+
+export type PaymentOrderStatus =
+  | 'PENDING'
+  | 'PAID'
+  | 'RECHARGING'
+  | 'COMPLETED'
+  | 'EXPIRED'
+  | 'CANCELLED'
+  | 'FAILED'
+  | 'REFUND_REQUESTED'
+  | 'REFUNDING'
+  | 'PARTIALLY_REFUNDED'
+  | 'REFUNDED'
+  | 'REFUND_FAILED';
+
+export type PaymentOrder = {
+  id: number;
+  user_id: number;
+  amount: number;
+  pay_amount: number;
+  fee_rate: number;
+  payment_type: string;
+  out_trade_no: string;
+  status: PaymentOrderStatus;
+  order_type: 'balance' | 'subscription' | string;
+  created_at: string;
+  expires_at: string;
+  paid_at?: string;
+  completed_at?: string;
+  refund_amount: number;
+  plan_id?: number;
+};
+
+export type PaymentCreateOrderPayload = {
+  amount: number;
+  payment_type: string;
+  order_type?: 'balance' | 'subscription' | string;
+  plan_id?: number;
+};
+
+export type PaymentCreateOrderResult = {
+  order_id: number;
+  amount?: number;
+  pay_amount: number;
+  fee_rate?: number;
+  status?: PaymentOrderStatus;
+  payment_type?: string;
+  pay_url?: string;
+  qr_code?: string;
+  client_secret?: string;
+  expires_at: string;
+  payment_mode?: string;
+};
+
 export type GeneratePayload = {
   prompt: string;
   model?: string;
@@ -282,11 +376,14 @@ export type SiteSettings = {
     updated_at: string | null;
   };
   inspiration_sources: string[];
+  recharge_url: string;
   upstream?: {
     provider_base_url: string;
     auth_base_url: string;
     effective_provider_base_url: string;
     effective_auth_base_url: string;
+    recharge_url: string;
+    effective_recharge_url: string;
     sub2api_admin_token_set: boolean;
     sub2api_admin_token_hint: string;
     sub2api_admin_jwt_set: boolean;
@@ -340,6 +437,7 @@ export function updateSiteSettings(payload: {
   inspiration_sources?: string[];
   provider_base_url?: string;
   auth_base_url?: string;
+  recharge_url?: string;
   sub2api_admin_token?: string;
   sub2api_admin_jwt?: string;
 }) {
@@ -420,6 +518,46 @@ export function getBalance() {
 
 export function getLedger(limit = 20) {
   return request<{ items: LedgerEntry[] }>(`/api/ledger?limit=${limit}`);
+}
+
+export function getPaymentCheckoutInfo() {
+  return request<PaymentCheckoutInfo>('/api/payment/checkout-info');
+}
+
+export function createPaymentOrder(payload: PaymentCreateOrderPayload) {
+  return request<PaymentCreateOrderResult>('/api/payment/orders', {
+    method: 'POST',
+    body: JSON.stringify({ ...payload, order_type: payload.order_type || 'balance' }),
+  });
+}
+
+export function getPaymentOrder(orderId: number) {
+  return request<PaymentOrder>(`/api/payment/orders/${orderId}`);
+}
+
+export function listPaymentOrders(params: { page?: number; page_size?: number; status?: string; order_type?: string; payment_type?: string } = {}) {
+  const search = new URLSearchParams();
+  if (params.page) search.set('page', String(params.page));
+  if (params.page_size) search.set('page_size', String(params.page_size));
+  if (params.status) search.set('status', params.status);
+  if (params.order_type) search.set('order_type', params.order_type);
+  if (params.payment_type) search.set('payment_type', params.payment_type);
+  const query = search.toString();
+  return request<{ items: PaymentOrder[]; total?: number; page?: number; page_size?: number }>(`/api/payment/orders/my${query ? `?${query}` : ''}`);
+}
+
+export function cancelPaymentOrder(orderId: number) {
+  return request<{ message: string }>(`/api/payment/orders/${orderId}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export function verifyPaymentOrder(outTradeNo: string) {
+  return request<PaymentOrder>('/api/payment/orders/verify', {
+    method: 'POST',
+    body: JSON.stringify({ out_trade_no: outTradeNo }),
+  });
 }
 
 export function getHistory(params: { limit?: number; offset?: number; q?: string } = {}) {

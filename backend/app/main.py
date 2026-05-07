@@ -85,6 +85,17 @@ class EcommercePublishCopyRequest(BaseModel):
     model: str | None = Field(default=None, max_length=120)
 
 
+class PaymentCreateOrderRequest(BaseModel):
+    amount: float = Field(gt=0)
+    payment_type: str = Field(min_length=1, max_length=80)
+    order_type: str = Field(default="balance", max_length=40)
+    plan_id: int | None = Field(default=None, ge=1)
+
+
+class PaymentVerifyOrderRequest(BaseModel):
+    out_trade_no: str = Field(min_length=1, max_length=160)
+
+
 SIZE_PRESETS: dict[str, dict[str, str]] = {
     "1K": {
         "1:1": "1088x1088",
@@ -211,6 +222,7 @@ class SiteSettingsUpdate(BaseModel):
     auth_base_url: str | None = None
     sub2api_admin_token: str | None = Field(default=None, max_length=4096)
     sub2api_admin_jwt: str | None = Field(default=None, max_length=4096)
+    recharge_url: str | None = Field(default=None, max_length=2048)
 
 
 @dataclass
@@ -379,9 +391,9 @@ def create_app(
             if not sources:
                 raise HTTPException(status_code=400, detail="At least one case source is required")
             updates["inspiration_sources"] = sources
-        for key in ("provider_base_url", "auth_base_url"):
+        for key in ("provider_base_url", "auth_base_url", "recharge_url"):
             if key in updates:
-                updates[key] = _normalize_upstream_url(updates[key])
+                updates[key] = _normalize_upstream_url(updates[key], label="Recharge URL" if key == "recharge_url" else "Upstream URL")
         for key in ("sub2api_admin_token", "sub2api_admin_jwt"):
             if key in updates:
                 updates[key] = str(updates[key] or "").strip()
@@ -584,6 +596,104 @@ def create_app(
         db: Database = Depends(_db),
     ) -> dict[str, Any]:
         return {"items": db.list_ledger(viewer.owner_id, limit)}
+
+    @app.get("/api/payment/checkout-info")
+    async def payment_checkout_info(
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        auth_client: Sub2APIAuthClient = Depends(_auth_client),
+    ) -> dict[str, Any]:
+        access_token = _require_access_token(viewer)
+        try:
+            return await auth_client.payment_checkout_info(_site_auth_base_url(db, settings), access_token)
+        except ProviderError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.post("/api/payment/orders")
+    async def payment_create_order(
+        payload: PaymentCreateOrderRequest,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        auth_client: Sub2APIAuthClient = Depends(_auth_client),
+    ) -> dict[str, Any]:
+        access_token = _require_access_token(viewer)
+        body = payload.model_dump(exclude_none=True)
+        try:
+            return await auth_client.payment_create_order(_site_auth_base_url(db, settings), access_token, body)
+        except ProviderError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.get("/api/payment/orders/my")
+    async def payment_list_orders(
+        page: int = 1,
+        page_size: int = 20,
+        status: str = "",
+        order_type: str = "",
+        payment_type: str = "",
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        auth_client: Sub2APIAuthClient = Depends(_auth_client),
+    ) -> dict[str, Any]:
+        access_token = _require_access_token(viewer)
+        params = {
+            "page": max(1, page),
+            "page_size": min(max(1, page_size), 100),
+        }
+        if status:
+            params["status"] = status
+        if order_type:
+            params["order_type"] = order_type
+        if payment_type:
+            params["payment_type"] = payment_type
+        try:
+            return await auth_client.payment_list_orders(_site_auth_base_url(db, settings), access_token, params)
+        except ProviderError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.get("/api/payment/orders/{order_id}")
+    async def payment_get_order(
+        order_id: int,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        auth_client: Sub2APIAuthClient = Depends(_auth_client),
+    ) -> dict[str, Any]:
+        access_token = _require_access_token(viewer)
+        try:
+            return await auth_client.payment_get_order(_site_auth_base_url(db, settings), access_token, order_id)
+        except ProviderError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.post("/api/payment/orders/{order_id}/cancel")
+    async def payment_cancel_order(
+        order_id: int,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        auth_client: Sub2APIAuthClient = Depends(_auth_client),
+    ) -> dict[str, Any]:
+        access_token = _require_access_token(viewer)
+        try:
+            return await auth_client.payment_cancel_order(_site_auth_base_url(db, settings), access_token, order_id)
+        except ProviderError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.post("/api/payment/orders/verify")
+    async def payment_verify_order(
+        payload: PaymentVerifyOrderRequest,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        auth_client: Sub2APIAuthClient = Depends(_auth_client),
+    ) -> dict[str, Any]:
+        access_token = _require_access_token(viewer)
+        try:
+            return await auth_client.payment_verify_order(_site_auth_base_url(db, settings), access_token, payload.out_trade_no)
+        except ProviderError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     @app.get("/api/history")
     async def history(
@@ -1195,6 +1305,14 @@ def _require_authenticated(viewer: ViewerContext) -> None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
 
+def _require_access_token(viewer: ViewerContext) -> str:
+    _require_authenticated(viewer)
+    access_token = str((viewer.session or {}).get("access_token") or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="JokoAI login token is missing")
+    return access_token
+
+
 def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext, settings: Settings) -> dict[str, Any]:
     payload = {
         "default_locale": settings_data["default_locale"],
@@ -1205,6 +1323,7 @@ def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext, 
             "updated_at": settings_data["announcement_updated_at"],
         },
         "inspiration_sources": settings_data.get("inspiration_sources") or [],
+        "recharge_url": _effective_recharge_url(settings_data, settings),
         "viewer": {
             "authenticated": viewer.authenticated,
             "is_admin": viewer.is_admin,
@@ -1218,6 +1337,8 @@ def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext, 
             "auth_base_url": str(settings_data.get("auth_base_url") or ""),
             "effective_provider_base_url": _effective_provider_base_url(settings_data, settings),
             "effective_auth_base_url": _effective_auth_base_url(settings_data, settings),
+            "recharge_url": str(settings_data.get("recharge_url") or ""),
+            "effective_recharge_url": _effective_recharge_url(settings_data, settings),
             "sub2api_admin_token_set": bool(admin_token or settings.sub2api_admin_token),
             "sub2api_admin_token_hint": _mask_key(admin_token or settings.sub2api_admin_token),
             "sub2api_admin_jwt_set": bool(admin_jwt or settings.sub2api_admin_jwt),
@@ -1226,13 +1347,13 @@ def _public_site_settings(settings_data: dict[str, Any], viewer: ViewerContext, 
     return payload
 
 
-def _normalize_upstream_url(value: Any) -> str:
+def _normalize_upstream_url(value: Any, label: str = "Upstream URL") -> str:
     text = str(value or "").strip().rstrip("/")
     if not text:
         return ""
     parsed = urlparse(text)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(status_code=400, detail="Upstream URL must be a valid http:// or https:// URL")
+        raise HTTPException(status_code=400, detail=f"{label} must be a valid http:// or https:// URL")
     return text
 
 
@@ -1242,6 +1363,10 @@ def _effective_provider_base_url(settings_data: dict[str, Any], settings: Settin
 
 def _effective_auth_base_url(settings_data: dict[str, Any], settings: Settings) -> str:
     return str(settings_data.get("auth_base_url") or settings.auth_base_url).strip().rstrip("/")
+
+
+def _effective_recharge_url(settings_data: dict[str, Any], settings: Settings) -> str:
+    return str(settings_data.get("recharge_url") or settings.recharge_url).strip().rstrip("/")
 
 
 def _site_auth_base_url(db: Database, settings: Settings) -> str:

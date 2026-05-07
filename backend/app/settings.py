@@ -67,6 +67,7 @@ class Settings:
     trial_balance_usd: float
     sub2api_admin_token: str
     sub2api_admin_jwt: str
+    recharge_url: str
     inspiration_source_urls: list[str] | None = None
 
     @classmethod
@@ -123,6 +124,7 @@ class Settings:
             trial_balance_usd=float(os.getenv("TRIAL_BALANCE_USD", "2")),
             sub2api_admin_token=os.getenv("SUB2API_ADMIN_TOKEN", "").strip(),
             sub2api_admin_jwt=os.getenv("SUB2API_ADMIN_JWT", "").strip(),
+            recharge_url=os.getenv("RECHARGE_URL", "https://ai.get-money.locker").strip(),
             inspiration_source_urls=source_urls,
         )
 

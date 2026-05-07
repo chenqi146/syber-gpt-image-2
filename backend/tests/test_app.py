@@ -194,6 +194,7 @@ class FakeAuthClient:
         self.list_available_groups_base_urls: list[str] = []
         self.create_key_base_urls: list[str] = []
         self.list_usage_base_urls: list[str] = []
+        self.payment_calls: list[dict[str, Any]] = []
         self.admin_balance_calls: list[dict[str, Any]] = []
         self.created_keys: list[dict[str, Any]] = []
         self.usage_logs: list[dict[str, Any]] = [
@@ -275,6 +276,84 @@ class FakeAuthClient:
         self.list_usage_base_urls.append(base_url)
         return list(self.usage_logs)
 
+    async def payment_checkout_info(self, base_url: str, access_token: str) -> dict[str, Any]:
+        self.payment_calls.append({"method": "checkout_info", "base_url": base_url, "access_token": access_token})
+        return {
+            "methods": {
+                "alipay": {
+                    "daily_limit": 0,
+                    "daily_used": 0,
+                    "daily_remaining": 0,
+                    "single_min": 1,
+                    "single_max": 100,
+                    "fee_rate": 0,
+                    "available": True,
+                }
+            },
+            "global_min": 1,
+            "global_max": 100,
+            "plans": [],
+            "balance_disabled": False,
+            "help_text": "demo help",
+            "help_image_url": "",
+            "stripe_publishable_key": "",
+        }
+
+    async def payment_create_order(self, base_url: str, access_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.payment_calls.append({"method": "create_order", "base_url": base_url, "access_token": access_token, "payload": payload})
+        return {
+            "order_id": 88,
+            "amount": payload["amount"],
+            "pay_amount": payload["amount"],
+            "fee_rate": 0,
+            "status": "PENDING",
+            "payment_type": payload["payment_type"],
+            "qr_code": "https://pay.example.com/qr/88",
+            "expires_at": "2026-05-07T12:00:00Z",
+        }
+
+    async def payment_list_orders(self, base_url: str, access_token: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.payment_calls.append({"method": "list_orders", "base_url": base_url, "access_token": access_token, "params": params})
+        return {"items": [], "total": 0, "page": params.get("page", 1), "page_size": params.get("page_size", 20)}
+
+    async def payment_get_order(self, base_url: str, access_token: str, order_id: int) -> dict[str, Any]:
+        self.payment_calls.append({"method": "get_order", "base_url": base_url, "access_token": access_token, "order_id": order_id})
+        return {
+            "id": order_id,
+            "user_id": 7,
+            "amount": 2,
+            "pay_amount": 2,
+            "fee_rate": 0,
+            "payment_type": "alipay",
+            "out_trade_no": "sub2_demo",
+            "status": "COMPLETED",
+            "order_type": "balance",
+            "created_at": "2026-05-07T11:00:00Z",
+            "expires_at": "2026-05-07T12:00:00Z",
+            "refund_amount": 0,
+        }
+
+    async def payment_cancel_order(self, base_url: str, access_token: str, order_id: int) -> dict[str, Any]:
+        self.payment_calls.append({"method": "cancel_order", "base_url": base_url, "access_token": access_token, "order_id": order_id})
+        return {"message": "cancelled"}
+
+    async def payment_verify_order(self, base_url: str, access_token: str, out_trade_no: str) -> dict[str, Any]:
+        self.payment_calls.append({"method": "verify_order", "base_url": base_url, "access_token": access_token, "out_trade_no": out_trade_no})
+        return {
+            "id": 88,
+            "user_id": 7,
+            "amount": 2,
+            "pay_amount": 2,
+            "fee_rate": 0,
+            "payment_type": "alipay",
+            "out_trade_no": out_trade_no,
+            "status": "COMPLETED",
+            "order_type": "balance",
+            "created_at": "2026-05-07T11:00:00Z",
+            "expires_at": "2026-05-07T12:00:00Z",
+            "refund_amount": 0,
+        }
+
     async def admin_update_user_balance(
         self,
         base_url: str,
@@ -330,6 +409,7 @@ def make_app(tmp_path: Path, auth_client: FakeAuthClient | None = None, provider
         trial_balance_usd=2,
         sub2api_admin_token="",
         sub2api_admin_jwt="",
+        recharge_url="https://ai.get-money.locker",
     )
     app = create_app(settings=settings, provider=provider or FakeProvider(), auth_client=auth_client or FakeAuthClient())
     app.dependency_overrides[_db] = lambda: app.state.db
@@ -1191,6 +1271,7 @@ def test_site_settings_default_to_chinese(tmp_path: Path) -> None:
         assert "JokoAI" in data["announcement"]["title"]
         assert "https://ai.get-money.locker" in data["announcement"]["body"]
         assert data["inspiration_sources"] == ["https://example.com/README.md"]
+        assert data["recharge_url"] == "https://ai.get-money.locker"
 
 
 def test_admin_can_update_site_settings(tmp_path: Path) -> None:
@@ -1233,6 +1314,7 @@ def test_admin_can_update_global_upstream_settings(tmp_path: Path) -> None:
             json={
                 "provider_base_url": "https://image-upstream.example.com/v1/",
                 "auth_base_url": "https://auth-upstream.example.com/",
+                "recharge_url": "https://pay.example.com/recharge/",
             },
         )
 
@@ -1242,6 +1324,8 @@ def test_admin_can_update_global_upstream_settings(tmp_path: Path) -> None:
         assert data["upstream"]["auth_base_url"] == "https://auth-upstream.example.com"
         assert data["upstream"]["effective_provider_base_url"] == "https://image-upstream.example.com/v1"
         assert data["upstream"]["effective_auth_base_url"] == "https://auth-upstream.example.com"
+        assert data["upstream"]["recharge_url"] == "https://pay.example.com/recharge"
+        assert data["upstream"]["effective_recharge_url"] == "https://pay.example.com/recharge"
 
         public_settings = client.get("/api/auth/public-settings")
         assert public_settings.status_code == 200
@@ -1266,6 +1350,45 @@ def test_invalid_global_upstream_url_is_rejected(tmp_path: Path) -> None:
         response = client.put("/api/site-settings", json={"provider_base_url": "not-a-url"})
 
         assert response.status_code == 400
+
+
+def test_payment_proxy_requires_login(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.get("/api/payment/checkout-info")
+
+        assert response.status_code == 401
+
+
+def test_payment_proxy_uses_logged_in_access_token(tmp_path: Path) -> None:
+    auth = FakeAuthClient()
+    app = make_app(tmp_path, auth_client=auth)
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"email": "demo@example.com", "password": "secret123"})
+        assert login.status_code == 200
+
+        checkout = client.get("/api/payment/checkout-info")
+        assert checkout.status_code == 200
+        assert checkout.json()["methods"]["alipay"]["available"] is True
+
+        order = client.post(
+            "/api/payment/orders",
+            json={"amount": 2, "payment_type": "alipay", "order_type": "balance"},
+        )
+        assert order.status_code == 200
+        assert order.json()["order_id"] == 88
+
+        detail = client.get("/api/payment/orders/88")
+        assert detail.status_code == 200
+        assert detail.json()["status"] == "COMPLETED"
+
+        verify = client.post("/api/payment/orders/verify", json={"out_trade_no": "sub2_demo"})
+        assert verify.status_code == 200
+
+        calls = auth.payment_calls
+        assert [call["method"] for call in calls] == ["checkout_info", "create_order", "get_order", "verify_order"]
+        assert all(call["base_url"] == "http://127.0.0.1:9878" for call in calls)
+        assert all(call["access_token"] == "access-demo" for call in calls)
+        assert calls[1]["payload"] == {"amount": 2.0, "payment_type": "alipay", "order_type": "balance"}
 
 
 def test_parse_inspiration_markdown() -> None:

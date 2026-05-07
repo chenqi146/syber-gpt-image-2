@@ -78,6 +78,75 @@ class Sub2APIAuthClient:
             return [item for item in data if isinstance(item, dict)]
         return []
 
+    async def payment_checkout_info(self, base_url: str, access_token: str) -> dict[str, Any]:
+        data = await self._request(
+            base_url,
+            "GET",
+            "/api/v1/payment/checkout-info",
+            access_token=access_token,
+        )
+        if not isinstance(data, dict):
+            raise ProviderError(502, "JokoAI 返回的支付配置数据格式不正确", data)
+        return data
+
+    async def payment_create_order(self, base_url: str, access_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        data = await self._request(
+            base_url,
+            "POST",
+            "/api/v1/payment/orders",
+            json=payload,
+            access_token=access_token,
+        )
+        if not isinstance(data, dict):
+            raise ProviderError(502, "JokoAI 返回的支付订单数据格式不正确", data)
+        return data
+
+    async def payment_list_orders(self, base_url: str, access_token: str, params: dict[str, Any]) -> dict[str, Any]:
+        data = await self._request(
+            base_url,
+            "GET",
+            "/api/v1/payment/orders/my",
+            params=params,
+            access_token=access_token,
+        )
+        if not isinstance(data, dict):
+            raise ProviderError(502, "JokoAI 返回的支付订单列表格式不正确", data)
+        return data
+
+    async def payment_get_order(self, base_url: str, access_token: str, order_id: int) -> dict[str, Any]:
+        data = await self._request(
+            base_url,
+            "GET",
+            f"/api/v1/payment/orders/{order_id}",
+            access_token=access_token,
+        )
+        if not isinstance(data, dict):
+            raise ProviderError(502, "JokoAI 返回的支付订单详情格式不正确", data)
+        return data
+
+    async def payment_cancel_order(self, base_url: str, access_token: str, order_id: int) -> dict[str, Any]:
+        data = await self._request(
+            base_url,
+            "POST",
+            f"/api/v1/payment/orders/{order_id}/cancel",
+            access_token=access_token,
+        )
+        if not isinstance(data, dict):
+            raise ProviderError(502, "JokoAI 返回的取消订单数据格式不正确", data)
+        return data
+
+    async def payment_verify_order(self, base_url: str, access_token: str, out_trade_no: str) -> dict[str, Any]:
+        data = await self._request(
+            base_url,
+            "POST",
+            "/api/v1/payment/orders/verify",
+            json={"out_trade_no": out_trade_no},
+            access_token=access_token,
+        )
+        if not isinstance(data, dict):
+            raise ProviderError(502, "JokoAI 返回的支付验证数据格式不正确", data)
+        return data
+
     async def admin_update_user_balance(
         self,
         base_url: str,

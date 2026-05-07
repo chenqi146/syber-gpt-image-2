@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, ArrowRight, CreditCard } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { BalanceInfo, LedgerEntry, formatBalance, formatDate, getBalance, getLedger } from '../api';
 import { useAuth } from '../auth';
 import { useNotifier } from '../notifications';
@@ -9,7 +10,6 @@ export default function Billing() {
   const { viewer } = useAuth();
   const { t } = useSite();
   const { notifyError } = useNotifier();
-  const rechargeUrl = 'https://ai.get-money.locker';
   const [balance, setBalance] = useState<BalanceInfo>();
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
 
@@ -40,15 +40,13 @@ export default function Billing() {
           <div className="mt-4 text-xs text-white/40">{balance?.ok ? t('billing_synced') : balance?.message || t('billing_not_configured')}</div>
           <div className="mt-6 border-t border-white/10 pt-5">
             <div className="mb-3 text-xs text-white/50">{t('billing_recharge_desc')}</div>
-            <a
+            <Link
               className="inline-flex items-center gap-2 border border-primary/30 px-5 py-3 text-xs font-bold uppercase tracking-widest text-primary transition-colors hover:bg-primary/10"
-              href={rechargeUrl}
-              rel="noreferrer"
-              target="_blank"
+              to="/recharge"
             >
               {t('billing_recharge')}
               <ArrowRight size={14} />
-            </a>
+            </Link>
           </div>
         </div>
 
