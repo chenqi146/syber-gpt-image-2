@@ -1,6 +1,7 @@
-export const SIZE_OPTIONS = ['1K', '2K', '4K'];
+export const SIZE_OPTIONS = ['FAST', '1K', '2K', '4K'];
 export const IMAGE_COUNT_OPTIONS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
 export const SIZE_LABELS: Record<string, string> = {
+  FAST: '快速',
   '1K': '1K (1080p)',
   '2K': '2K (1440p)',
   '4K': '4K (2160p)',
@@ -8,6 +9,15 @@ export const SIZE_LABELS: Record<string, string> = {
 export const ASPECT_RATIO_OPTIONS = ['1:1', '16:9', '9:16', '3:2', '2:3', '4:3', '3:4'];
 export const QUALITY_OPTIONS = ['auto', 'low', 'medium', 'high'];
 export const SIZE_PRESETS: Record<string, Record<string, string>> = {
+  FAST: {
+    '1:1': '1024x1024',
+    '16:9': '1360x768',
+    '9:16': '768x1360',
+    '3:2': '1248x832',
+    '2:3': '832x1248',
+    '4:3': '1184x896',
+    '3:4': '896x1184',
+  },
   '1K': {
     '1:1': '1088x1088',
     '16:9': '2048x1152',
@@ -49,6 +59,9 @@ export function normalizeImageScale(value: string | undefined) {
   }
   if (SIZE_BY_PRESET_VALUE[normalized]) {
     return SIZE_BY_PRESET_VALUE[normalized];
+  }
+  if (/^10\d{2}x10\d{2}$/i.test(normalized)) {
+    return 'FAST';
   }
   if (/^1\d{3}x1\d{3}$/i.test(normalized)) {
     return '1K';

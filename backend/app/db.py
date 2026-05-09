@@ -728,6 +728,24 @@ class Database:
                 ).fetchall()
         return [_history_row(row) for row in rows]
 
+    def list_history_by_task(self, owner_id: str, task_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT h.*, p.id AS published_inspiration_id, p.created_at AS published_at,
+                       t.prompt AS task_prompt, t.result_json AS task_result_json, t.request_json AS task_request_json
+                FROM image_history h
+                LEFT JOIN inspiration_prompts p
+                    ON p.source_url = ? AND p.source_item_id = h.id
+                LEFT JOIN image_tasks t
+                    ON t.id = h.task_id AND t.owner_id = h.owner_id
+                WHERE h.owner_id = ? AND h.task_id = ?
+                ORDER BY h.batch_index ASC, h.created_at ASC, h.id ASC
+                """,
+                (USER_GALLERY_SOURCE_URL, owner_id, task_id),
+            ).fetchall()
+        return [_history_row(row) for row in rows]
+
     def delete_history(self, owner_id: str, history_id: str) -> bool:
         with self.connect() as conn:
             conn.execute(

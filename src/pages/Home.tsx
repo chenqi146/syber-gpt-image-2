@@ -21,6 +21,7 @@ import ImagePreviewModal from '../components/ImagePreviewModal';
 import MasonryGrid from '../components/MasonryGrid';
 import ModelBadge from '../components/ModelBadge';
 import PromptEditorModal from '../components/PromptEditorModal';
+import RetryImage from '../components/RetryImage';
 import { useHomeFeed } from '../homeFeed';
 import { groupHistoryItems, mergeHistoryItems } from '../historyGroups';
 import { createReferenceEntry, REFERENCE_ROLE_OPTIONS, ReferenceImageEntry } from '../referenceImages';
@@ -29,7 +30,6 @@ import {
   ASPECT_RATIO_OPTIONS,
   IMAGE_COUNT_OPTIONS,
   isSupportedImagePreset,
-  normalizeImageScale,
   providerImageSize,
   QUALITY_OPTIONS,
   SIZE_LABELS,
@@ -78,11 +78,16 @@ export default function Home() {
   const [promptInstruction, setPromptInstruction] = useState('');
   const [selectedReferences, setSelectedReferences] = useState<ReferenceImageEntry[]>([]);
   const [selectedPreviews, setSelectedPreviews] = useState<{ id: string; name: string; url: string }[]>([]);
-  const [imageScale, setImageScale] = useState('2K');
+  const [imageScale, setImageScale] = useState('FAST');
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [imageQuality, setImageQuality] = useState('auto');
   const [imageCount, setImageCount] = useState('1');
-  const [previewItem, setPreviewItem] = useState<{ imageUrl: string; prompt: string } | null>(null);
+  const [previewItem, setPreviewItem] = useState<{
+    imageUrl?: string | null;
+    images?: { id?: string; url: string; prompt?: string | null; title?: string | null }[];
+    initialIndex?: number;
+    prompt: string;
+  } | null>(null);
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
   const [generationPanelExpanded, setGenerationPanelExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -134,7 +139,6 @@ export default function Home() {
     getConfig()
       .then((config) => {
         if (cancelled) return;
-        setImageScale(normalizeImageScale(config.default_size));
         setImageQuality(config.default_quality || 'auto');
       })
       .catch(() => undefined);
@@ -145,7 +149,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!isSupportedImagePreset(imageScale, aspectRatio)) {
-      setImageScale('2K');
+      setImageScale('FAST');
     }
   }, [aspectRatio, imageScale]);
 
@@ -664,9 +668,18 @@ export default function Home() {
                           key={image.id}
                           className="relative aspect-square cursor-zoom-in overflow-hidden bg-black text-left"
                           type="button"
-                          onClick={() => setPreviewItem({ imageUrl: image.url, prompt: image.prompt })}
+                          onClick={() => setPreviewItem({
+                              images: images.map((galleryImage, galleryIndex) => ({
+                                id: galleryImage.id,
+                                url: galleryImage.url,
+                                prompt: galleryImage.prompt,
+                                title: `${item.title}-${galleryIndex + 1}`,
+                              })),
+                              initialIndex: index,
+                              prompt: image.prompt,
+                            })}
                         >
-                          <img
+                          <RetryImage
                             alt={`${item.id}-${index + 1}`}
                             className="h-full w-full object-cover opacity-95 transition-opacity duration-300 hover:opacity-100"
                             loading="lazy"
@@ -681,7 +694,7 @@ export default function Home() {
                       type="button"
                       onClick={() => setPreviewItem({ imageUrl: item.img, prompt: item.prompt })}
                     >
-                      <img
+                      <RetryImage
                         alt={item.id}
                         className="block h-auto w-full opacity-95 transition-opacity duration-300 hover:opacity-100"
                         loading="lazy"
@@ -702,7 +715,19 @@ export default function Home() {
                       <button
                         className="flex h-10 items-center justify-center border border-white/10 bg-white/5 text-white/70 transition-all duration-300 hover:border-primary hover:text-primary"
                         type="button"
-                        onClick={() => setPreviewItem({ imageUrl: images[0]?.url || item.img, prompt: item.prompt })}
+                        onClick={() => setPreviewItem({
+                            imageUrl: images[0]?.url || item.img,
+                            images: isBatch
+                              ? images.map((galleryImage, galleryIndex) => ({
+                                id: galleryImage.id,
+                                url: galleryImage.url,
+                                prompt: galleryImage.prompt,
+                                title: `${item.title}-${galleryIndex + 1}`,
+                              }))
+                              : undefined,
+                            initialIndex: 0,
+                            prompt: item.prompt,
+                          })}
                         title={t('history_preview')}
                       >
                         <Maximize2 size={15} />
@@ -945,7 +970,7 @@ export default function Home() {
                     title={preview.name}
                     onClick={() => setPreviewItem({ imageUrl: preview.url, prompt: preview.name })}
                   >
-                    <img alt={preview.name} className="h-full w-full object-cover" src={preview.url} />
+                    <RetryImage alt={preview.name} className="h-full w-full object-cover" src={preview.url} />
                   </button>
                   <button
                     type="button"
@@ -989,6 +1014,8 @@ export default function Home() {
 
       <ImagePreviewModal
         imageUrl={previewItem?.imageUrl || null}
+        images={previewItem?.images}
+        initialIndex={previewItem?.initialIndex || 0}
         alt={previewItem?.prompt || 'preview'}
         subtitle={previewItem?.prompt}
         onClose={() => setPreviewItem(null)}

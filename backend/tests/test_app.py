@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -867,6 +869,30 @@ def test_generation_fans_out_multi_image_requests_into_one_task(tmp_path: Path) 
         assert len(ledger) == 3
 
 
+def test_task_zip_download_includes_successful_task_images(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        generated = client.post(
+            "/api/images/generate",
+            json={"prompt": "downloadable batch", "size": "1K", "aspect_ratio": "1:1", "n": 2},
+        )
+
+        assert generated.status_code == 200
+        task = wait_for_task(client, generated.json()["id"], attempts=120)
+        response = client.get(f"/api/tasks/{task['id']}/download.zip")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        with zipfile.ZipFile(BytesIO(response.content)) as archive:
+            names = archive.namelist()
+            assert len(names) == 2
+            assert names[0].startswith("01-")
+            assert names[1].startswith("02-")
+            assert all(name.endswith(".png") for name in names)
+
+
 def test_generation_retries_retryable_upstream_errors(tmp_path: Path) -> None:
     provider = FlakyProvider(generate_failures=2)
     with make_client(tmp_path, provider=provider) as client:
@@ -980,6 +1006,9 @@ def test_manual_override_ledger_keeps_estimated_cost(tmp_path: Path) -> None:
 
 
 def test_image_size_presets_follow_provider_limits() -> None:
+    assert _provider_image_size("FAST", "1:1") == "1024x1024"
+    assert _provider_image_size("FAST", "16:9") == "1360x768"
+    assert _provider_image_size("FAST", "9:16") == "768x1360"
     assert _provider_image_size("1K", "1:1") == "1088x1088"
     assert _provider_image_size("1K", "16:9") == "2048x1152"
     assert _provider_image_size("1K", "9:16") == "1152x2048"
@@ -999,6 +1028,7 @@ def test_image_size_presets_follow_provider_limits() -> None:
     with pytest.raises(HTTPException):
         _provider_image_size("4096x4096", "1:1")
     assert _image_size_tier("1088x1088") == "1K"
+    assert _image_size_tier("1024x1024") == "FAST"
     assert _image_size_tier("2048x1152") == "1K"
     assert _image_size_tier("1440x1440") == "2K"
     assert _image_size_tier("2560x1440") == "2K"

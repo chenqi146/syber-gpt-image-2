@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Search, Filter, Download, Trash2, RefreshCw, ArrowDown, Loader2, Maximize2, Globe2 } from 'lucide-react';
-import { deleteHistory, formatDate, generateImage, getHistory, HistoryItem, publishHistory, unpublishHistory } from '../api';
+import { Search, Filter, Download, Trash2, RefreshCw, ArrowDown, Loader2, Maximize2, Globe2, Archive } from 'lucide-react';
+import { deleteHistory, formatDate, generateImage, getHistory, HistoryItem, publishHistory, taskDownloadUrl, unpublishHistory } from '../api';
 import { useAuth } from '../auth';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import MasonryGrid from '../components/MasonryGrid';
+import RetryImage from '../components/RetryImage';
 import { groupHistoryItems, HistoryGroup, mergeHistoryItems } from '../historyGroups';
 import { useNotifier } from '../notifications';
 import { useSite } from '../site';
@@ -39,7 +40,12 @@ export default function History() {
   const [removedIds, setRemovedIds] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [offset, setOffset] = useState(0);
-  const [previewItem, setPreviewItem] = useState<{ imageUrl: string | null; prompt: string } | null>(null);
+  const [previewItem, setPreviewItem] = useState<{
+    imageUrl?: string | null;
+    images?: { id?: string; url: string; prompt?: string | null; title?: string | null }[];
+    initialIndex?: number;
+    prompt: string;
+  } | null>(null);
   const [publishingIds, setPublishingIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -179,9 +185,18 @@ export default function History() {
                     key={image.id}
                     className="relative aspect-square cursor-zoom-in overflow-hidden bg-black text-left"
                     type="button"
-                    onClick={() => setPreviewItem({ imageUrl: image.url, prompt: image.prompt })}
+                    onClick={() => setPreviewItem({
+                      images: group.images.map((galleryImage, galleryIndex) => ({
+                        id: galleryImage.id,
+                        url: galleryImage.url,
+                        prompt: galleryImage.prompt,
+                        title: `${group.title}-${galleryIndex + 1}`,
+                      })),
+                      initialIndex: imageIndex,
+                      prompt: image.prompt,
+                    })}
                   >
-                    <img
+                    <RetryImage
                       alt={`${item.id}-${imageIndex + 1}`}
                       className="h-full w-full object-cover opacity-95 transition-opacity duration-300 hover:opacity-100"
                       loading="lazy"
@@ -196,7 +211,7 @@ export default function History() {
                 type="button"
                 onClick={() => setPreviewItem({ imageUrl: previewImage, prompt: item.prompt })}
               >
-                <img
+                <RetryImage
                   alt={item.prompt}
                   className="block h-auto w-full opacity-95 transition-opacity duration-300 hover:opacity-100"
                   src={previewImage}
@@ -237,12 +252,24 @@ export default function History() {
                 {publishingIds.includes(group.key) ? <Loader2 className="animate-spin" size={14} /> : <Globe2 size={14} />}
                 {group.allPublished ? t('history_unpublish_case') : t('history_publish_case')}
               </button>
-              <div className="grid grid-cols-3 gap-2 sm:grid-cols-[44px_44px_44px_1fr]">
+              <div className="grid grid-cols-4 gap-2 sm:grid-cols-[44px_44px_44px_44px_1fr]">
                 <button
                   className="flex h-10 items-center justify-center border border-white/20 bg-white/5 text-white transition-all hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
                   type="button"
                   title={t('history_preview')}
-                  onClick={() => setPreviewItem({ imageUrl: previewImage || null, prompt: group.taskPrompt })}
+                  onClick={() => setPreviewItem({
+                    imageUrl: previewImage || null,
+                    images: group.images.length > 0
+                      ? group.images.map((galleryImage, galleryIndex) => ({
+                        id: galleryImage.id,
+                        url: galleryImage.url,
+                        prompt: galleryImage.prompt,
+                        title: `${group.title}-${galleryIndex + 1}`,
+                      }))
+                      : undefined,
+                    initialIndex: 0,
+                    prompt: group.taskPrompt,
+                  })}
                   disabled={!previewImage}
                 >
                   <Maximize2 size={14} />
@@ -255,6 +282,15 @@ export default function History() {
                 >
                   <Download size={14} />
                 </a>
+                <a
+                  href={isBatch && item.task_id ? taskDownloadUrl(item.task_id) : '#'}
+                  className={`flex h-10 items-center justify-center border border-white/20 bg-white/5 text-white transition-all hover:border-primary hover:text-primary ${
+                    isBatch && item.task_id ? '' : 'pointer-events-none opacity-35'
+                  }`}
+                  title={t('history_download_zip')}
+                >
+                  <Archive size={14} />
+                </a>
                 <button
                   onClick={() => handleDelete(group)}
                   className="flex h-10 items-center justify-center border border-error/20 bg-error/5 text-error transition-all hover:bg-error/20"
@@ -265,7 +301,7 @@ export default function History() {
                 </button>
                 <button
                   onClick={() => handleRegenerate(group)}
-                  className={`col-span-3 flex h-10 min-w-0 items-center justify-center gap-2 px-3 text-xs font-black uppercase sm:col-span-1 ${colors.btnBg} ${colors.btnText} ${colors.btnShadow} shadow-white/40 transition-all duration-300 hover:bg-white hover:border-white`}
+                  className={`col-span-4 flex h-10 min-w-0 items-center justify-center gap-2 px-3 text-xs font-black uppercase sm:col-span-1 ${colors.btnBg} ${colors.btnText} ${colors.btnShadow} shadow-white/40 transition-all duration-300 hover:bg-white hover:border-white`}
                   type="button"
                 >
                   <RefreshCw size={14} />
@@ -291,6 +327,8 @@ export default function History() {
 
       <ImagePreviewModal
         imageUrl={previewItem?.imageUrl || null}
+        images={previewItem?.images}
+        initialIndex={previewItem?.initialIndex || 0}
         alt={previewItem?.prompt || 'preview'}
         subtitle={previewItem?.prompt}
         onClose={() => setPreviewItem(null)}

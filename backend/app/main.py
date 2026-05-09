@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlparse
@@ -138,6 +140,15 @@ class PaymentVerifyOrderRequest(BaseModel):
 
 
 SIZE_PRESETS: dict[str, dict[str, str]] = {
+    "FAST": {
+        "1:1": "1024x1024",
+        "16:9": "1360x768",
+        "9:16": "768x1360",
+        "3:2": "1248x832",
+        "2:3": "832x1248",
+        "4:3": "1184x896",
+        "3:4": "896x1184",
+    },
     "1K": {
         "1:1": "1088x1088",
         "16:9": "2048x1152",
@@ -1060,6 +1071,36 @@ def create_app(
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         return _public_image_task(db, viewer.owner_id, task)
+
+    @app.get("/api/tasks/{task_id}/download.zip")
+    async def image_task_download_zip(
+        task_id: str,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+    ) -> Response:
+        task = db.get_image_task(viewer.owner_id, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        histories = [
+            item
+            for item in db.list_history_by_task(viewer.owner_id, task_id)
+            if item.get("status") == "succeeded" and item.get("image_path")
+        ]
+        archive = BytesIO()
+        count = 0
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for index, item in enumerate(histories, start=1):
+                image_path = Path(str(item.get("image_path") or ""))
+                if not image_path.is_file():
+                    continue
+                suffix = image_path.suffix.lower() if image_path.suffix else ".png"
+                zip_file.write(image_path, f"{index:02d}-{str(item['id'])[:8]}{suffix}")
+                count += 1
+        if count == 0:
+            raise HTTPException(status_code=404, detail="No downloadable images found for this task")
+        archive.seek(0)
+        headers = {"Content-Disposition": f'attachment; filename="joko-image2-{task_id[:12]}.zip"'}
+        return Response(content=archive.getvalue(), media_type="application/zip", headers=headers)
 
     @app.get("/api/tasks")
     async def image_tasks(
@@ -3348,7 +3389,7 @@ def _image_size_tier(size: str) -> str:
     parts = cleaned_size.split("x")
     if len(parts) != 2 or not all(part.isdigit() for part in parts):
         tier = cleaned_size.upper()
-        if tier in {"1K", "2K", "4K"}:
+        if tier in {"FAST", "1K", "2K", "4K"}:
             return tier
         return "2K"
     width, height = (int(part) for part in parts)
@@ -3363,6 +3404,8 @@ def _image_size_tier(size: str) -> str:
 def _image_ledger_amount(settings: Settings, size: str) -> float:
     tier = _image_size_tier(size)
     if tier == "1K":
+        return settings.image_price_1k
+    if tier == "FAST":
         return settings.image_price_1k
     if tier == "4K":
         return settings.image_price_4k

@@ -1,8 +1,9 @@
-import { CheckCircle2, Clock3, ImageIcon, Loader2, X, XCircle } from 'lucide-react';
+import { Archive, CheckCircle2, Clock3, ImageIcon, Loader2, X, XCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useMemo, useState } from 'react';
-import { formatDate } from '../api';
+import { formatDate, taskDownloadUrl } from '../api';
 import ImagePreviewModal from './ImagePreviewModal';
+import RetryImage from './RetryImage';
 import { useSite } from '../site';
 import { useTasks } from '../tasks';
 
@@ -26,7 +27,12 @@ export default function TaskDrawer() {
   const { t } = useSite();
   const { tasks, drawerOpen, closeDrawer, activeCount } = useTasks();
   const [filter, setFilter] = useState<FilterKey>('all');
-  const [previewItem, setPreviewItem] = useState<{ imageUrl: string; prompt: string } | null>(null);
+  const [previewItem, setPreviewItem] = useState<{
+    imageUrl?: string | null;
+    images?: { id?: string; url: string; prompt?: string | null; title?: string | null }[];
+    initialIndex?: number;
+    prompt: string;
+  } | null>(null);
 
   const visibleTasks = useMemo(() => {
     if (filter === 'all') {
@@ -138,15 +144,24 @@ export default function TaskDrawer() {
                         <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden border border-white/10 bg-black/40">
                           {previewImages.length > 1 ? (
                             <div className="grid h-full w-full grid-cols-2 gap-0.5 bg-black p-0.5">
-                              {previewImages.slice(0, 4).map((image) => (
+                              {previewImages.slice(0, 4).map((image, imageIndex) => (
                                 <button
                                   key={image.id}
                                   className="min-h-0 min-w-0 cursor-zoom-in overflow-hidden bg-black/40"
                                   type="button"
                                   title={t('history_preview')}
-                                  onClick={() => setPreviewItem({ imageUrl: image.url, prompt: image.prompt })}
+                                  onClick={() => setPreviewItem({
+                                    images: previewImages.map((galleryImage, galleryIndex) => ({
+                                      id: galleryImage.id,
+                                      url: galleryImage.url,
+                                      prompt: galleryImage.prompt,
+                                      title: `${task.id}-${galleryIndex + 1}`,
+                                    })),
+                                    initialIndex: imageIndex,
+                                    prompt: image.prompt,
+                                  })}
                                 >
-                                  <img alt={task.prompt} className="h-full w-full object-cover" src={image.url} />
+                                  <RetryImage alt={task.prompt} className="h-full w-full object-cover" src={image.url} />
                                 </button>
                               ))}
                             </div>
@@ -157,7 +172,7 @@ export default function TaskDrawer() {
                               title={t('history_preview')}
                               onClick={() => setPreviewItem({ imageUrl: previewImage, prompt: task.prompt })}
                             >
-                              <img alt={task.prompt} className="h-full w-full object-contain" src={previewImage} />
+                              <RetryImage alt={task.prompt} className="h-full w-full object-contain" src={previewImage} />
                             </button>
                           ) : (
                             <ImageIcon size={18} className="text-white/25" />
@@ -173,6 +188,16 @@ export default function TaskDrawer() {
                             {previewImages.length > 1 ? <span>x{previewImages.length}</span> : null}
                           </div>
                           {task.error ? <div className="mt-2 text-xs text-error">{task.error}</div> : null}
+                          {previewImages.length > 1 ? (
+                            <a
+                              className="mt-3 inline-flex h-8 items-center gap-2 border border-white/10 px-3 text-[10px] font-bold uppercase tracking-widest text-white/55 transition-colors hover:border-primary hover:text-primary"
+                              href={taskDownloadUrl(task.id)}
+                              title={t('history_download_zip')}
+                            >
+                              <Archive size={12} />
+                              {t('history_download_zip')}
+                            </a>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -185,6 +210,8 @@ export default function TaskDrawer() {
       </aside>
       <ImagePreviewModal
         imageUrl={previewItem?.imageUrl || null}
+        images={previewItem?.images}
+        initialIndex={previewItem?.initialIndex || 0}
         alt={previewItem?.prompt || 'preview'}
         subtitle={previewItem?.prompt}
         onClose={() => setPreviewItem(null)}

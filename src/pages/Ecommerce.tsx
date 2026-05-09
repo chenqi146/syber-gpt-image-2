@@ -11,6 +11,7 @@ import {
   generateEcommerceImages,
   getConfig,
   getHistory,
+  taskDownloadUrl,
   type EcommerceAnalyzeResult,
   type EcommercePublishCopyResult,
   type EcommerceRecommendedPlan,
@@ -21,6 +22,7 @@ import GenerationSelect from '../components/GenerationSelect';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import ModelBadge from '../components/ModelBadge';
 import PromptEditorModal from '../components/PromptEditorModal';
+import RetryImage from '../components/RetryImage';
 import { copyTextToClipboard } from '../clipboard';
 import { groupHistoryItems, HistoryGroup, mergeHistoryItems } from '../historyGroups';
 import {
@@ -61,13 +63,19 @@ export default function Ecommerce() {
     style: '高级、干净、统一电商详情页',
     extraRequirements: '',
   });
-  const [imageScale, setImageScale] = useState('2K');
+  const [imageScale, setImageScale] = useState('FAST');
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [imageQuality, setImageQuality] = useState('auto');
   const [imageCount, setImageCount] = useState('4');
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
-  const [previewItem, setPreviewItem] = useState<{ imageUrl: string | null; prompt: string; referenceUrl?: string | null } | null>(null);
+  const [previewItem, setPreviewItem] = useState<{
+    imageUrl?: string | null;
+    images?: { id?: string; url: string; prompt?: string | null; title?: string | null; subtitle?: string | null }[];
+    initialIndex?: number;
+    prompt: string;
+    referenceUrl?: string | null;
+  } | null>(null);
   const [editingItem, setEditingItem] = useState<HistoryItem | null>(null);
   const [editPrompt, setEditPrompt] = useState('');
   const [editReferences, setEditReferences] = useState<ReferenceImageEntry[]>([]);
@@ -90,7 +98,6 @@ export default function Ecommerce() {
     getConfig()
       .then((config) => {
         if (cancelled) return;
-        setImageScale(normalizeImageScale(config.default_size));
         setImageQuality(config.default_quality || 'auto');
       })
       .catch(() => undefined);
@@ -594,7 +601,7 @@ export default function Ecommerce() {
             >
               {productPreview ? (
                 <>
-                  <img alt={productPreview.name} className="h-full w-full object-cover opacity-90" src={productPreview.url} />
+                  <RetryImage alt={productPreview.name} className="h-full w-full object-cover opacity-90" src={productPreview.url} />
                   <span className="absolute bottom-0 left-0 right-0 truncate bg-black/75 px-2 py-1 text-[9px] text-white/70">{productPreview.name}</span>
                 </>
               ) : (
@@ -805,8 +812,10 @@ export default function Ecommerce() {
         </section>
       )}
 
-      <ImagePreviewModal
+          <ImagePreviewModal
         imageUrl={previewItem?.imageUrl || null}
+        images={previewItem?.images}
+        initialIndex={previewItem?.initialIndex || 0}
         alt={previewItem?.prompt || 'preview'}
         subtitle={previewItem?.referenceUrl ? `${previewItem.prompt}\n\n${t('ecom_reference_image')}: ${previewItem.referenceUrl}` : previewItem?.prompt}
         onClose={() => setPreviewItem(null)}
@@ -1000,7 +1009,7 @@ function ProjectCard({ group, onOpen, onDelete, t }: { key?: string; group: Hist
       <button className="grid w-full grid-cols-3 gap-1 bg-black p-1 text-left" type="button" onClick={onOpen}>
         {group.images.slice(0, 9).map((image) => (
           <div key={image.id} className="aspect-square overflow-hidden bg-black">
-            <img alt={group.title} className="h-full w-full object-cover opacity-95" loading="lazy" src={image.url} />
+            <RetryImage alt={group.title} className="h-full w-full object-cover opacity-95" loading="lazy" src={image.url} />
           </div>
         ))}
       </button>
@@ -1052,7 +1061,7 @@ function ReferenceImageEditor({
     <div className="grid w-52 shrink-0 grid-cols-[64px_1fr] gap-2 border border-white/10 bg-black p-1.5">
       <div className="relative h-24 overflow-hidden border border-white/10 bg-black">
         <button className="h-full w-full cursor-zoom-in" type="button" onClick={onPreview}>
-          <img alt={preview.name} className="h-full w-full object-cover" src={preview.url} />
+          <RetryImage alt={preview.name} className="h-full w-full object-cover" src={preview.url} />
         </button>
         <button
           className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center border border-white/15 bg-black/80 text-white/80 hover:border-error hover:text-error"
@@ -1104,7 +1113,7 @@ function ProjectDetail({
   t,
 }: {
   group: HistoryGroup;
-  onPreview: (item: { imageUrl: string | null; prompt: string; referenceUrl?: string | null }) => void;
+  onPreview: (item: { imageUrl?: string | null; images?: { id?: string; url: string; prompt?: string | null; title?: string | null; subtitle?: string | null }[]; initialIndex?: number; prompt: string; referenceUrl?: string | null }) => void;
   onDeleteItem: (item: HistoryItem) => void;
   onEdit: (item: HistoryItem) => void;
   onCopy: (prompt: string) => void;
@@ -1125,12 +1134,22 @@ function ProjectDetail({
           disabled={!referenceUrl}
           onClick={() => onPreview({ imageUrl: referenceUrl || null, prompt: t('ecom_reference_image') })}
         >
-          {referenceUrl ? <img alt={t('ecom_reference_image')} className="h-full w-full object-cover" src={referenceUrl} /> : t('ecom_no_reference')}
+          {referenceUrl ? <RetryImage alt={t('ecom_reference_image')} className="h-full w-full object-cover" src={referenceUrl} /> : t('ecom_no_reference')}
         </button>
         <div className="min-w-0">
           <div className="mb-2 text-[10px] uppercase tracking-widest text-secondary">{t('ecom_project_detail')}</div>
           <h2 className="text-3xl font-black tracking-tight text-white">{group.title}</h2>
           <p className="mt-3 line-clamp-4 text-sm text-white/70">{group.taskPrompt}</p>
+          {group.first.task_id && group.images.length > 1 ? (
+            <a
+              className="mt-4 inline-flex h-9 items-center gap-2 border border-primary/30 px-3 text-[10px] font-bold uppercase tracking-widest text-primary hover:bg-primary/10"
+              href={taskDownloadUrl(group.first.task_id)}
+              title={t('history_download_zip')}
+            >
+              <Download size={13} />
+              {t('history_download_zip')}
+            </a>
+          ) : null}
           <div className="mt-4 flex flex-wrap gap-2 text-[10px] uppercase tracking-widest text-white/40">
             <span>{group.first.model}</span>
             <span>{group.first.size}</span>
@@ -1206,8 +1225,22 @@ function ProjectDetail({
       <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
         {group.images.map((image, index) => (
           <div key={image.id} className="overflow-hidden border border-white/10 bg-black">
-            <button className="block w-full cursor-zoom-in bg-black text-left" type="button" onClick={() => onPreview({ imageUrl: image.url, prompt: image.prompt, referenceUrl })}>
-              <img alt={`${group.title}-${index + 1}`} className="block h-auto w-full opacity-95 hover:opacity-100" loading="lazy" src={image.url} />
+            <button
+              className="block w-full cursor-zoom-in bg-black text-left"
+              type="button"
+              onClick={() => onPreview({
+                images: group.images.map((galleryImage, galleryIndex) => ({
+                  id: galleryImage.id,
+                  url: galleryImage.url,
+                  prompt: galleryImage.prompt,
+                  title: `${group.title}-${galleryIndex + 1}`,
+                })),
+                initialIndex: index,
+                prompt: image.prompt,
+                referenceUrl,
+              })}
+            >
+              <RetryImage alt={`${group.title}-${index + 1}`} className="block h-auto w-full opacity-95 hover:opacity-100" loading="lazy" src={image.url} />
             </button>
             <div className="border-t border-white/10 bg-surface-container-low/80 p-4">
               <div className="mb-2 flex items-center justify-between gap-3">
@@ -1216,7 +1249,21 @@ function ProjectDetail({
               </div>
               <p className="mb-3 line-clamp-4 text-sm text-white/75">{image.prompt}</p>
               <div className="grid grid-cols-[44px_44px_44px_1fr] gap-2">
-                <button className="flex h-10 items-center justify-center border border-white/15 bg-white/5 text-white/75 hover:border-primary hover:text-primary" type="button" onClick={() => onPreview({ imageUrl: image.url, prompt: image.prompt, referenceUrl })}>
+                <button
+                  className="flex h-10 items-center justify-center border border-white/15 bg-white/5 text-white/75 hover:border-primary hover:text-primary"
+                  type="button"
+                  onClick={() => onPreview({
+                    images: group.images.map((galleryImage, galleryIndex) => ({
+                      id: galleryImage.id,
+                      url: galleryImage.url,
+                      prompt: galleryImage.prompt,
+                      title: `${group.title}-${galleryIndex + 1}`,
+                    })),
+                    initialIndex: index,
+                    prompt: image.prompt,
+                    referenceUrl,
+                  })}
+                >
                   <Maximize2 size={14} />
                 </button>
                 <a className="flex h-10 items-center justify-center border border-white/15 bg-white/5 text-white/75 hover:border-primary hover:text-primary" href={image.url} download>

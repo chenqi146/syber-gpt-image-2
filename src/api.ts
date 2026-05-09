@@ -843,6 +843,10 @@ export function listImageTasks(params: { limit?: number; status?: string[] } = {
   return request<{ items: ImageTask[] }>(`/api/tasks${query ? `?${query}` : ''}`);
 }
 
+export function taskDownloadUrl(taskId: string) {
+  return `${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/download.zip`;
+}
+
 export async function waitForImageTask(
   taskId: string,
   options: {

@@ -6,6 +6,7 @@ import { useAuth } from '../auth';
 import { copyTextToClipboard } from '../clipboard';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import MasonryGrid from '../components/MasonryGrid';
+import RetryImage from '../components/RetryImage';
 import { useNotifier } from '../notifications';
 import { useSite } from '../site';
 
@@ -143,7 +144,7 @@ export default function Favorites() {
                       type="button"
                       onClick={() => setPreviewItem(item)}
                     >
-                      <img
+                      <RetryImage
                         alt={item.title}
                         className="block h-auto w-full opacity-95 transition-opacity duration-300 hover:opacity-100"
                         loading="lazy"
