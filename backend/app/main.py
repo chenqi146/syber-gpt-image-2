@@ -13,7 +13,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .auth_client import Sub2APIAuthClient
 from .db import Database, utc_now
@@ -85,6 +85,47 @@ class EcommercePublishCopyRequest(BaseModel):
     model: str | None = Field(default=None, max_length=120)
 
 
+class EcommerceAnalyzeRequest(BaseModel):
+    product_name: str = Field(default="", max_length=300)
+    materials: str = Field(default="", max_length=1200)
+    selling_points: str = Field(default="", max_length=1600)
+    scenarios: str = Field(default="", max_length=1200)
+    platform: str = Field(default="", max_length=120)
+    style: str = Field(default="", max_length=800)
+    extra_requirements: str = Field(default="", max_length=1600)
+    image_count: int = Field(default=4, ge=1, le=9)
+    size: str | None = Field(default=None, max_length=80)
+    aspect_ratio: str | None = Field(default=None, max_length=20)
+    model: str | None = Field(default=None, max_length=120)
+
+
+class EcommercePlanScreen(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str = Field(default="", max_length=300)
+    body_copy: str = Field(default="", alias="copy", max_length=1200)
+    layout_type: str = Field(default="", max_length=80)
+    visual_goal: str = Field(default="", max_length=1200)
+    copy_density: str = Field(default="", max_length=80)
+    needs_model: bool | None = None
+    needs_specs: bool | None = None
+    needs_closeup: bool | None = None
+    reference_focus: list[str] | None = None
+
+
+class EcommerceSelectedPlan(BaseModel):
+    name: str = Field(default="", max_length=300)
+    platform: str = Field(default="", max_length=120)
+    style: str = Field(default="", max_length=800)
+    image_count: int = Field(default=1, ge=1, le=9)
+    materials: str = Field(default="", max_length=1200)
+    selling_points: str = Field(default="", max_length=1600)
+    scenarios: str = Field(default="", max_length=1200)
+    extra_requirements: str = Field(default="", max_length=1600)
+    reason: str = Field(default="", max_length=1200)
+    screens: list[EcommercePlanScreen] = Field(default_factory=list)
+
+
 class PaymentCreateOrderRequest(BaseModel):
     amount: float = Field(gt=0)
     payment_type: str = Field(min_length=1, max_length=80)
@@ -146,24 +187,31 @@ SERIES_PROMPT_PLANNER_SYSTEM_PROMPT = """你是 JokoAI 的系列图像提示词�
 用户会提供一个总需求、生成模式、图片张数和画面参数。你的任务是把总需求拆解成一组同风格、同产品、可连续浏览的系列图像提示词。
 要求：
 1. 只输出 JSON，不要 Markdown、解释或代码块。
-2. JSON 格式必须是：{"style_guide":"...", "items":[{"index":1,"title":"...","copy":"...","prompt":"..."}]}。
+2. JSON 格式必须是：{"style_guide":"...", "items":[{"index":1,"title":"...","copy":"...","layout_type":"...","visual_goal":"...","prompt":"..."}]}。
 3. items 数量必须等于用户要求的图片张数，index 从 1 开始连续。
 4. 每个 prompt 都必须可以独立用于 gpt-image-2 生图/改图接口。
-5. 每个 prompt 都要包含统一风格约束：同一产品、同一色调、同一字体样式、同一标题/正文排版、同一电商详情页视觉系统。
+5. 每个 prompt 都要包含统一风格约束：同一产品、同一色调、同一字体样式、同一详情页视觉系统。
 6. 如果是电商详情页、海报组、主图/副图、故事分镜等需求，要自动拆成不同页面/屏幕/模块，不要重复同一张图。
 7. 如果是改图模式，prompt 必须明确要求严格参考上传图片中的主体、材质、结构和外观，只改变本屏需要表达的场景、文案和布局。
-8. 画面中文字必须简洁、清晰、可读，避免乱码；标题和说明文案由你在 copy 字段中给出，并写入对应 prompt。
-9. 保持原提示词主要语言；中文输入输出中文，英文输入输出英文。"""
+8. 不要把每一屏都做成“顶部大标题 + 商品 + 一段文案”的标题卡片。必须按 layout_type 做差异化：模特上身、场景穿搭、参数表、尺码表、细节局部放大、材质微距、多角度拼版、卖点对比、收尾转化等。
+9. 画面中文字必须简洁、清晰、可读，避免乱码；并非每张都需要大标题。参数/尺码/细节页可以用表格、标注线、局部放大、信息卡表达。
+10. title 是内部模块名，只用于后台列表和规划结构；不要把 title 原样写进图片画面。画面文案应来自 copy、卖点、参数或自然短句。
+11. 如果用户上下文包含 selected_plan，说明用户已经选定了固定蓝图；你不能改变屏数和顺序，但必须根据每屏 layout_type/visual_goal 扩写成真实详情页画面，不要机械复述标题。
+12. 保持原提示词主要语言；中文输入输出中文，英文输入输出英文。"""
 
 ECOMMERCE_PRODUCT_ANALYZER_SYSTEM_PROMPT = """你是 JokoAI 的电商商品图识别分析师。
-用户会上传一张或多张商品参考图，并提供商品名称、材质、卖点、平台和风格。你的任务是综合识别商品外观并输出可用于后续电商详情页生成的结构化信息。
+用户会上传一张或多张商品参考图，并提供商品名称、材质、卖点、平台和风格。你的任务是综合识别商品外观并输出可用于后续电商详情页生成的结构化信息和推荐设计方案。
 要求：
 1. 只输出 JSON，不要 Markdown、解释或代码块。
-2. JSON 格式必须是：{"product_type":"...","appearance":"...","visible_material":"...","colors":["..."],"shape":"...","details":["..."],"generation_constraints":"..."}。
+2. JSON 格式必须是：{"product_type":"...","appearance":"...","visible_material":"...","colors":["..."],"shape":"...","details":["..."],"selling_points":["..."],"target_audience":["..."],"use_scenarios":["..."],"style_suggestions":["..."],"generation_constraints":"...","recommended_plans":[{"name":"...","platform":"...","style":"...","image_count":4,"materials":"...","selling_points":"...","scenarios":"...","extra_requirements":"...","reason":"...","screens":[{"title":"...","copy":"...","layout_type":"hero|model_fit|scene_lifestyle|material_closeup|detail_callout|spec_table|size_chart|multi_angle|comparison|social_cover|conversion","visual_goal":"...","copy_density":"low|medium|high","needs_model":false,"needs_specs":false,"needs_closeup":false,"reference_focus":["..."]}]}]}。
 3. 如果有正面、侧面、背面、材质细节等多角度参考图，必须把它们合并理解为同一商品的完整外观，不得只依据第一张图。
 4. generation_constraints 要明确说明生成时必须保持商品主体、颜色、材质、比例、结构、轮廓一致，并保留多角度参考图中可见的关键侧面/背面/细节信息。
-5. 不确定的信息不要编造，优先根据图片可见信息和用户输入综合判断。
-6. 中文输入输出中文，英文输入输出英文。"""
+5. recommended_plans 给出 3 个适合普通商家的方案，必须覆盖不同用途，例如电商详情页、小红书种草图、白底主图/场景图/直播带货图。每个方案都要能一键填入生成表单。
+6. 每个 recommended_plan 的 image_count 必须等于用户填写字段里的 image_count，screens 数量也必须等于 image_count，方案名不得出现“四屏/三屏/五屏”等和 image_count 不一致的字样。
+7. screens 必须从商品品类和用途出发完整规划，不能只给前 4 屏后面留空；生鲜、水果、食品、服装、数码、家居等品类要使用不同模块。
+8. 电商详情页方案不能只是标题列表，要像真实详情页脚本：至少混合主视觉、场景/模特、参数/规格、材质/细节、对比/卖点、收尾转化等页面类型。不要每屏都要求顶部大标题。
+9. 不确定的信息不要编造，优先根据图片可见信息和用户输入综合判断。
+10. 中文输入输出中文，英文输入输出英文。"""
 
 ECOMMERCE_PUBLISH_COPY_SYSTEM_PROMPT = """你是 JokoAI 的电商种草文案策划。
 用户会提供一个已生成的电商详情页项目参数。你的任务是为小红书/朋友圈/社媒发布生成独立标题和正文。
@@ -359,7 +407,7 @@ def create_app(
         try:
             return await auth_client.public_settings(_site_auth_base_url(db, settings))
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.get("/api/auth/session")
     async def auth_session(
@@ -413,7 +461,7 @@ def create_app(
             body = payload.model_dump(exclude_none=True)
             return await auth_client.send_verify_code(_site_auth_base_url(db, settings), body)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.post("/api/auth/register")
     async def auth_register(
@@ -437,7 +485,7 @@ def create_app(
             )
             return {"ok": True, "viewer": viewer_payload}
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.post("/api/auth/login")
     async def auth_login(
@@ -467,7 +515,7 @@ def create_app(
             )
             return {"ok": True, "viewer": viewer_payload}
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.post("/api/auth/login/2fa")
     async def auth_login_2fa(
@@ -490,7 +538,7 @@ def create_app(
             )
             return {"ok": True, "viewer": viewer_payload}
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.post("/api/auth/logout")
     async def auth_logout(
@@ -552,7 +600,7 @@ def create_app(
             config = db.get_config(viewer.owner_id, settings, user_name=_viewer_name(viewer, settings))
             return await provider.test_connection(config)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.get("/api/account")
     async def account(
@@ -609,7 +657,7 @@ def create_app(
         try:
             return await auth_client.payment_checkout_info(_site_auth_base_url(db, settings), access_token)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.post("/api/payment/orders")
     async def payment_create_order(
@@ -624,7 +672,7 @@ def create_app(
         try:
             return await auth_client.payment_create_order(_site_auth_base_url(db, settings), access_token, body)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.get("/api/payment/orders/my")
     async def payment_list_orders(
@@ -652,7 +700,7 @@ def create_app(
         try:
             return await auth_client.payment_list_orders(_site_auth_base_url(db, settings), access_token, params)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.get("/api/payment/orders/{order_id}")
     async def payment_get_order(
@@ -666,7 +714,7 @@ def create_app(
         try:
             return await auth_client.payment_get_order(_site_auth_base_url(db, settings), access_token, order_id)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.post("/api/payment/orders/{order_id}/cancel")
     async def payment_cancel_order(
@@ -680,7 +728,7 @@ def create_app(
         try:
             return await auth_client.payment_cancel_order(_site_auth_base_url(db, settings), access_token, order_id)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.post("/api/payment/orders/verify")
     async def payment_verify_order(
@@ -694,7 +742,7 @@ def create_app(
         try:
             return await auth_client.payment_verify_order(_site_auth_base_url(db, settings), access_token, payload.out_trade_no)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
 
     @app.get("/api/history")
     async def history(
@@ -825,7 +873,7 @@ def create_app(
             provider_response = await provider.chat_completion(config, payload)
             search_query = _extract_inspiration_search_query(_extract_chat_completion_text(provider_response), fallback_query)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
         section = (request.section or "").strip()
         return {
             "query": search_query,
@@ -1041,7 +1089,7 @@ def create_app(
         try:
             provider_response = await provider.chat_completion(config, payload)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
         optimized_prompt = _extract_chat_completion_text(provider_response)
         if not optimized_prompt:
             raise HTTPException(status_code=502, detail="Prompt optimizer returned an empty response")
@@ -1066,7 +1114,7 @@ def create_app(
         try:
             provider_response = await provider.chat_completion(config, payload)
         except ProviderError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
         parsed = _extract_json_object(_extract_chat_completion_text(provider_response))
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=502, detail="Publish copy generator returned an invalid response")
@@ -1079,6 +1127,79 @@ def create_app(
             "body": body,
             "model": payload["model"],
             "usage": provider_response.get("usage") if isinstance(provider_response, dict) else None,
+        }
+
+    @app.post("/api/ecommerce/analyze")
+    async def ecommerce_analyze(
+        image: Annotated[UploadFile, File()],
+        reference_image: Annotated[list[UploadFile] | None, File()] = None,
+        product_name: Annotated[str, Form(max_length=300)] = "",
+        materials: Annotated[str, Form(max_length=1200)] = "",
+        selling_points: Annotated[str, Form(max_length=1600)] = "",
+        scenarios: Annotated[str, Form(max_length=1200)] = "",
+        platform: Annotated[str, Form(max_length=120)] = "",
+        style: Annotated[str, Form(max_length=800)] = "",
+        extra_requirements: Annotated[str, Form(max_length=1600)] = "",
+        image_count: Annotated[int, Form(ge=1, le=9)] = 4,
+        size: Annotated[str | None, Form()] = None,
+        aspect_ratio: Annotated[str | None, Form()] = None,
+        reference_notes: Annotated[str | None, Form()] = None,
+        viewer: ViewerContext = Depends(_viewer),
+        db: Database = Depends(_db),
+        settings: Settings = Depends(_settings),
+        provider: OpenAICompatibleImageClient = Depends(_provider),
+    ) -> dict[str, Any]:
+        _require_authenticated(viewer)
+        config = db.get_config(viewer.owner_id, settings, user_name=_viewer_name(viewer, settings))
+        reference_upload_files = reference_image or []
+        normalized_reference_notes = _normalize_reference_notes(_parse_reference_notes(reference_notes), 1 + len(reference_upload_files))
+        saved_upload = _attach_reference_notes([await save_upload(settings, image)], normalized_reference_notes[:1])[0]
+        extra_uploads = _attach_reference_notes(
+            [await save_upload(settings, upload) for upload in reference_upload_files],
+            normalized_reference_notes[1:],
+            start_index=1,
+        )
+        ecommerce_uploads = [saved_upload, *extra_uploads]
+        request_model = EcommerceAnalyzeRequest(
+            product_name=product_name,
+            materials=materials,
+            selling_points=selling_points,
+            scenarios=scenarios,
+            platform=platform,
+            style=style,
+            extra_requirements=extra_requirements,
+            image_count=image_count,
+            size=size,
+            aspect_ratio=aspect_ratio,
+        )
+        prompt = _ecommerce_prompt_from_fields(
+            product_name=product_name,
+            materials=materials,
+            selling_points=selling_points,
+            scenarios=scenarios,
+            platform=platform,
+            style=style,
+            extra_requirements=extra_requirements,
+            image_count=image_count,
+        )
+        try:
+            analysis = await _analyze_ecommerce_product(
+                provider,
+                config,
+                settings,
+                upload=saved_upload,
+                uploads=ecommerce_uploads,
+                prompt=prompt,
+                request=request_model,
+            )
+        except ProviderError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=_provider_error_message(exc)) from exc
+        return {
+            "analysis": analysis,
+            "reference_notes": _task_reference_notes(ecommerce_uploads),
+            "model": settings.prompt_optimizer_model.strip(),
+            "form": _ecommerce_form_suggestion_from_analysis(analysis, request_model),
+            "plans": _normalize_ecommerce_recommended_plans(analysis, request_model),
         }
 
     @app.post("/api/images/generate")
@@ -1180,10 +1301,11 @@ def create_app(
         quality: Annotated[str | None, Form()] = None,
         n: Annotated[int, Form(ge=1, le=9)] = 4,
         reference_notes: Annotated[str | None, Form()] = None,
+        selected_plan: Annotated[str | None, Form()] = None,
+        analysis: Annotated[str | None, Form()] = None,
         viewer: ViewerContext = Depends(_viewer),
         db: Database = Depends(_db),
         settings: Settings = Depends(_settings),
-        provider: OpenAICompatibleImageClient = Depends(_provider),
     ) -> dict[str, Any]:
         _require_authenticated(viewer)
         config = db.get_config(viewer.owner_id, settings, user_name=_viewer_name(viewer, settings))
@@ -1206,15 +1328,14 @@ def create_app(
             extra_requirements=extra_requirements,
             image_count=n,
         )
-        analysis = await _analyze_ecommerce_product(
-            provider,
-            config,
-            settings,
-            upload=saved_upload,
-            uploads=ecommerce_uploads,
-            prompt=prompt,
+        parsed_analysis = _parse_ecommerce_analysis(analysis)
+        normalized_selected_plan = _normalize_selected_ecommerce_plan(_parse_selected_ecommerce_plan(selected_plan), n)
+        provider_prompt = (
+            _append_ecommerce_consistency_lock(prompt, parsed_analysis)
+            if isinstance(parsed_analysis, dict)
+            else prompt
         )
-        provider_prompt = _append_reference_notes_to_prompt(_append_ecommerce_consistency_lock(prompt, analysis), ecommerce_uploads)
+        provider_prompt = _append_reference_notes_to_prompt(provider_prompt, ecommerce_uploads)
         fields = {
             "model": model or config["model"],
             "prompt": provider_prompt,
@@ -1238,7 +1359,8 @@ def create_app(
                     "mask": None,
                     "reference_notes": _task_reference_notes(ecommerce_uploads),
                     "ecommerce": {
-                        "analysis": analysis,
+                        "analysis": parsed_analysis,
+                        "analysis_status": "ready" if isinstance(parsed_analysis, dict) else "pending",
                         "product_name": product_name,
                         "materials": materials,
                         "selling_points": selling_points,
@@ -1246,6 +1368,7 @@ def create_app(
                         "platform": platform,
                         "style": style,
                         "extra_requirements": extra_requirements,
+                        "selected_plan": normalized_selected_plan,
                     },
                 },
                 "input_image_url": saved_upload["url"],
@@ -1926,6 +2049,7 @@ def _series_prompt_planner_payload(
     aspect_ratio: str,
     quality: str,
     settings: Settings,
+    selected_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     context = {
         "mode": mode,
@@ -1936,23 +2060,50 @@ def _series_prompt_planner_payload(
         "quality": quality,
         "user_prompt": prompt.strip(),
     }
+    if selected_plan:
+        context["selected_plan"] = _selected_plan_for_planner_context(selected_plan)
+        user_text = (
+            "请严格按 selected_plan 中已选定的系列蓝图扩写最终图像提示词。"
+            "禁止改变屏数、顺序和每屏主题；只能补充构图、光线、材质、文字排版、商品一致性和电商质感。"
+            "selected_plan.screens.internal_title 是内部模块名，不得要求图片把这些标题原样显示出来；"
+            "可见文字应来自 copy、商品卖点、参数表或自然短句。\n\n"
+            f"{json.dumps(context, ensure_ascii=False)}"
+        )
+    else:
+        user_text = (
+            "请把以下总需求拆解成系列图像提示词。"
+            "每张图必须承担不同内容模块，但整体像同一套详情页/海报系列。\n\n"
+            f"{json.dumps(context, ensure_ascii=False)}"
+        )
     return {
         "model": settings.prompt_optimizer_model.strip(),
         "messages": [
             {"role": "system", "content": SERIES_PROMPT_PLANNER_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    "请把以下总需求拆解成系列图像提示词。"
-                    "每张图必须承担不同内容模块，但整体像同一套详情页/海报系列。\n\n"
-                    f"{json.dumps(context, ensure_ascii=False)}"
-                ),
-            },
+            {"role": "user", "content": user_text},
         ],
         "temperature": 0.35,
         "max_tokens": 3800,
         "stream": False,
     }
+
+
+def _selected_plan_for_planner_context(selected_plan: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(selected_plan)
+    screens = selected_plan.get("screens")
+    if not isinstance(screens, list):
+        return sanitized
+    sanitized_screens: list[dict[str, Any]] = []
+    for screen in screens:
+        if not isinstance(screen, dict):
+            continue
+        item = dict(screen)
+        title = str(item.pop("title", "") or "").strip()
+        if title:
+            item["internal_title"] = title
+        sanitized_screens.append(item)
+    sanitized["screens"] = sanitized_screens
+    sanitized["visible_text_rule"] = "internal_title 只用于后台识别页面主题，禁止作为图片可见文字。"
+    return sanitized
 
 
 def _ecommerce_prompt_from_fields(
@@ -1975,8 +2126,8 @@ def _ecommerce_prompt_from_fields(
         f"目标平台：{platform.strip() or '通用电商'}",
         f"视觉风格：{style.strip() or '高级、干净、统一'}",
         f"图片张数：{image_count} 张，每张作为详情页中的一个连续模块。",
-        "要求每一屏都有清晰标题和说明文案，字体样式、排版网格、色调和产品呈现方式保持一致。",
-        "每一屏内容不能重复，应分别覆盖主卖点、使用场景、材质细节、成分/结构、尺寸定制、百搭优势、细节工艺、信任背书或转化总结。",
+        "要求像真实商品详情页，不要每一屏都做成标题海报；标题可以是小栏目标签，也可以用参数表、标注线、局部放大、模特场景、多角度拼版来表达。",
+        "每一屏内容不能重复，应混合覆盖主视觉、模特/场景、材质细节、参数规格、尺码/尺寸、细节工艺、多角度展示、信任背书或转化总结。",
     ]
     if extra_requirements.strip():
         parts.append(f"额外要求：{extra_requirements.strip()}")
@@ -1989,8 +2140,23 @@ def _ecommerce_product_analyzer_payload(
     uploads: list[dict[str, Any]] | None = None,
     prompt: str,
     settings: Settings,
+    request: EcommerceAnalyzeRequest | None = None,
 ) -> dict[str, Any]:
     reference_uploads = uploads or [upload]
+    context: dict[str, Any] = {}
+    if request is not None:
+        context = {
+            "product_name": request.product_name.strip(),
+            "materials": request.materials.strip(),
+            "selling_points": request.selling_points.strip(),
+            "scenarios": request.scenarios.strip(),
+            "platform": request.platform.strip(),
+            "style": request.style.strip(),
+            "extra_requirements": request.extra_requirements.strip(),
+            "image_count": request.image_count,
+            "size": request.size or "",
+            "aspect_ratio": request.aspect_ratio or "",
+        }
     content: list[dict[str, Any]] = [
         {
             "type": "text",
@@ -1998,6 +2164,7 @@ def _ecommerce_product_analyzer_payload(
                 "请综合识别这些商品参考图，并结合以下电商详情页需求输出结构化商品分析。\n"
                 "多张图代表同一个商品的不同角度或细节，必须合并为完整商品身份，不要只看第一张。\n\n"
                 f"{_reference_notes_text(reference_uploads)}\n\n"
+                f"用户填写字段：\n{json.dumps(context, ensure_ascii=False)}\n\n"
                 f"{prompt}"
             ),
         }
@@ -2017,6 +2184,46 @@ def _ecommerce_product_analyzer_payload(
         "max_tokens": 1200,
         "stream": False,
     }
+
+
+def _parse_selected_ecommerce_plan(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        plan = EcommerceSelectedPlan.model_validate(payload)
+    except ValidationError:
+        return None
+    return plan.model_dump()
+
+
+def _parse_ecommerce_analysis(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not any(
+        key in payload
+        for key in [
+            "product_type",
+            "appearance",
+            "visible_material",
+            "generation_constraints",
+            "selling_points",
+            "recommended_plans",
+        ]
+    ):
+        return None
+    return payload
 
 
 def _extract_chat_completion_text(provider_response: dict[str, Any]) -> str:
@@ -2050,6 +2257,7 @@ async def _plan_series_prompts(
     size: str,
     aspect_ratio: str,
     quality: str,
+    selected_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         provider_response = await provider.chat_completion(
@@ -2063,25 +2271,71 @@ async def _plan_series_prompts(
                 aspect_ratio=aspect_ratio,
                 quality=quality,
                 settings=settings,
+                selected_plan=selected_plan,
             ),
         )
         text = _extract_chat_completion_text(provider_response)
         plan = _parse_series_prompt_plan(text, image_count)
         if plan is not None:
-            plan["source"] = "planner"
+            if selected_plan:
+                plan = _merge_selected_plan_screen_metadata(plan, selected_plan)
+            plan["source"] = "selected_plan" if selected_plan else "planner"
             return plan
+    except ProviderError as exc:
+        if _should_surface_provider_error(exc):
+            raise
     except Exception:
         pass
-    plan = _fallback_series_prompt_plan(
-        prompt=prompt,
-        mode=mode,
-        image_count=image_count,
-        size=size,
-        aspect_ratio=aspect_ratio,
-        quality=quality,
-    )
-    plan["source"] = "fallback"
+    if selected_plan:
+        plan = _fallback_selected_plan_prompt_plan(
+            selected_plan=selected_plan,
+            prompt=prompt,
+            mode=mode,
+            image_count=image_count,
+            size=size,
+            aspect_ratio=aspect_ratio,
+            quality=quality,
+        )
+        plan["source"] = "selected_plan_fallback"
+    else:
+        plan = _fallback_series_prompt_plan(
+            prompt=prompt,
+            mode=mode,
+            image_count=image_count,
+            size=size,
+            aspect_ratio=aspect_ratio,
+            quality=quality,
+        )
+        plan["source"] = "fallback"
     return plan
+
+
+def _merge_selected_plan_screen_metadata(plan: dict[str, Any], selected_plan: dict[str, Any]) -> dict[str, Any]:
+    plan_items = plan.get("items")
+    screens = selected_plan.get("screens") if isinstance(selected_plan, dict) else None
+    if not isinstance(plan_items, list) or not isinstance(screens, list):
+        return plan
+    merged_items: list[dict[str, Any]] = []
+    for index, item in enumerate(plan_items):
+        if not isinstance(item, dict):
+            continue
+        selected_screen = screens[index] if index < len(screens) and isinstance(screens[index], dict) else {}
+        normalized_screen = _normalize_ecommerce_screen(
+            {
+                "title": selected_screen.get("title") or item.get("title") or f"第 {index + 1} 屏",
+                "copy": item.get("copy") or selected_screen.get("copy") or "",
+                "layout_type": selected_screen.get("layout_type") or item.get("layout_type"),
+                "visual_goal": selected_screen.get("visual_goal") or item.get("visual_goal"),
+                "copy_density": selected_screen.get("copy_density") or item.get("copy_density"),
+                "needs_model": selected_screen.get("needs_model") if selected_screen.get("needs_model") is not None else item.get("needs_model"),
+                "needs_specs": selected_screen.get("needs_specs") if selected_screen.get("needs_specs") is not None else item.get("needs_specs"),
+                "needs_closeup": selected_screen.get("needs_closeup") if selected_screen.get("needs_closeup") is not None else item.get("needs_closeup"),
+                "reference_focus": selected_screen.get("reference_focus") or item.get("reference_focus"),
+            },
+            index=index,
+        )
+        merged_items.append({**item, **normalized_screen, "index": item.get("index") or index + 1})
+    return {**plan, "items": merged_items}
 
 
 async def _analyze_ecommerce_product(
@@ -2092,16 +2346,19 @@ async def _analyze_ecommerce_product(
     upload: dict[str, Any],
     uploads: list[dict[str, Any]] | None = None,
     prompt: str,
+    request: EcommerceAnalyzeRequest | None = None,
 ) -> dict[str, Any]:
     try:
         provider_response = await provider.chat_completion(
             config,
-            _ecommerce_product_analyzer_payload(upload=upload, uploads=uploads, prompt=prompt, settings=settings),
+            _ecommerce_product_analyzer_payload(upload=upload, uploads=uploads, prompt=prompt, settings=settings, request=request),
         )
         parsed = _extract_json_object(_extract_chat_completion_text(provider_response))
         if isinstance(parsed, dict):
             parsed["source"] = "vision"
             return parsed
+    except ProviderError:
+        raise
     except Exception:
         pass
     return {
@@ -2112,8 +2369,461 @@ async def _analyze_ecommerce_product(
         "colors": [],
         "shape": "",
         "details": [],
+        "selling_points": _split_ecommerce_field(request.selling_points if request else ""),
+        "target_audience": [],
+        "use_scenarios": _split_ecommerce_field(request.scenarios if request else ""),
+        "style_suggestions": _split_ecommerce_field(request.style if request else "") or ["高级、干净、统一电商详情页"],
         "generation_constraints": "严格参考上传商品图，保持同一商品主体、颜色、材质、比例、结构和轮廓一致。",
+        "recommended_plans": [],
     }
+
+
+def _split_ecommerce_field(value: str | None) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    for separator in ["|", "，", "、", ",", "\n", "；", ";"]:
+        text = text.replace(separator, "\n")
+    return [item.strip() for item in text.splitlines() if item.strip()][:12]
+
+
+def _join_ecommerce_values(values: Any) -> str:
+    if isinstance(values, list):
+        return "、".join(str(item).strip() for item in values if str(item).strip())
+    if isinstance(values, str):
+        return values.strip()
+    return ""
+
+
+def _ecommerce_form_suggestion_from_analysis(analysis: dict[str, Any], request: EcommerceAnalyzeRequest) -> dict[str, Any]:
+    product_type = str(analysis.get("product_type") or "").strip()
+    appearance = str(analysis.get("appearance") or "").strip()
+    visible_material = str(analysis.get("visible_material") or "").strip()
+    selling_points = _join_ecommerce_values(analysis.get("selling_points")) or request.selling_points.strip()
+    scenarios = _join_ecommerce_values(analysis.get("use_scenarios")) or request.scenarios.strip()
+    styles = _join_ecommerce_values(analysis.get("style_suggestions"))
+    details = _join_ecommerce_values(analysis.get("details"))
+    colors = _join_ecommerce_values(analysis.get("colors"))
+    default_extra = "严格保持商品外观一致，不改变颜色、材质、比例、结构和关键细节。"
+    if details or colors or appearance:
+        default_extra = f"{default_extra} 商品识别重点：{appearance} {colors} {details}".strip()
+    return {
+        "product_name": request.product_name.strip() or product_type or "未命名商品",
+        "materials": request.materials.strip() or visible_material,
+        "selling_points": selling_points,
+        "scenarios": scenarios,
+        "platform": request.platform.strip() or "淘宝/抖音/小红书",
+        "style": request.style.strip() or styles or "高级、干净、统一电商详情页",
+        "extra_requirements": request.extra_requirements.strip() or default_extra,
+        "image_count": request.image_count,
+    }
+
+
+def _normalize_ecommerce_recommended_plans(analysis: dict[str, Any], request: EcommerceAnalyzeRequest) -> list[dict[str, Any]]:
+    raw_plans = analysis.get("recommended_plans")
+    plans: list[dict[str, Any]] = []
+    if isinstance(raw_plans, list):
+        for raw in raw_plans[:6]:
+            if not isinstance(raw, dict):
+                continue
+            plan = _normalize_ecommerce_plan(raw, analysis, request)
+            if plan:
+                plans.append(plan)
+    fallback_plans = _fallback_ecommerce_recommended_plans(analysis, request)
+    for fallback in fallback_plans:
+        if len(plans) >= 3:
+            break
+        if not any(plan["name"] == fallback["name"] for plan in plans):
+            plans.append(fallback)
+    return plans[:3]
+
+
+def _normalize_ecommerce_plan(raw: dict[str, Any], analysis: dict[str, Any], request: EcommerceAnalyzeRequest) -> dict[str, Any] | None:
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        return None
+    image_count = max(1, min(9, request.image_count or 4))
+    try:
+        raw_image_count = int(raw.get("image_count") or 0)
+    except (TypeError, ValueError):
+        raw_image_count = 0
+    if raw_image_count and raw_image_count != image_count:
+        return None
+    if _plan_name_mentions_inconsistent_count(name, image_count):
+        return None
+    screens = raw.get("screens")
+    normalized_screens: list[dict[str, Any]] = []
+    if not isinstance(screens, list) or len(screens) != image_count:
+        return None
+    for index, screen in enumerate(screens):
+        if not isinstance(screen, dict):
+            return None
+        normalized_screen = _normalize_ecommerce_screen(screen, index=index)
+        title = str(normalized_screen.get("title") or "").strip()
+        copy = str(normalized_screen.get("copy") or "").strip()
+        if not title and not copy:
+            return None
+        normalized_screens.append(normalized_screen)
+    return {
+        "name": name,
+        "platform": str(raw.get("platform") or request.platform or "通用电商").strip(),
+        "style": str(raw.get("style") or request.style or "高级、干净、统一电商详情页").strip(),
+        "image_count": image_count,
+        "materials": str(raw.get("materials") or request.materials or analysis.get("visible_material") or "").strip(),
+        "selling_points": str(raw.get("selling_points") or request.selling_points or _join_ecommerce_values(analysis.get("selling_points"))).strip(),
+        "scenarios": str(raw.get("scenarios") or request.scenarios or _join_ecommerce_values(analysis.get("use_scenarios"))).strip(),
+        "extra_requirements": str(raw.get("extra_requirements") or request.extra_requirements or "").strip(),
+        "reason": str(raw.get("reason") or "").strip(),
+        "screens": normalized_screens,
+    }
+
+
+def _normalize_ecommerce_screen(screen: dict[str, Any], *, index: int = 0) -> dict[str, Any]:
+    title = str(screen.get("title") or "").strip() or "内容模块"
+    copy = str(screen.get("copy") or screen.get("body_copy") or "").strip()
+    layout_type = _normalize_ecommerce_layout_type(screen.get("layout_type"), title, copy, index)
+    visual_goal = str(screen.get("visual_goal") or "").strip()
+    if not visual_goal:
+        visual_goal = _default_visual_goal_for_layout(layout_type, title, copy)
+    copy_density = str(screen.get("copy_density") or "").strip().lower()
+    if copy_density not in {"low", "medium", "high"}:
+        copy_density = _default_copy_density_for_layout(layout_type)
+    reference_focus = screen.get("reference_focus")
+    if isinstance(reference_focus, list):
+        normalized_focus = [str(item).strip() for item in reference_focus if str(item).strip()][:8]
+    else:
+        normalized_focus = []
+    return {
+        "title": title,
+        "copy": copy,
+        "layout_type": layout_type,
+        "visual_goal": visual_goal,
+        "copy_density": copy_density,
+        "needs_model": _bool_or_default(screen.get("needs_model"), layout_type in {"model_fit", "scene_lifestyle"}),
+        "needs_specs": _bool_or_default(screen.get("needs_specs"), layout_type in {"spec_table", "size_chart"}),
+        "needs_closeup": _bool_or_default(screen.get("needs_closeup"), layout_type in {"material_closeup", "detail_callout"}),
+        "reference_focus": normalized_focus,
+    }
+
+
+def _normalize_ecommerce_layout_type(value: Any, title: str, copy: str, index: int = 0) -> str:
+    text = str(value or "").strip().lower()
+    aliases = {
+        "hero": "hero",
+        "main_visual": "hero",
+        "cover": "social_cover",
+        "social_cover": "social_cover",
+        "model": "model_fit",
+        "model_fit": "model_fit",
+        "try_on": "model_fit",
+        "scene": "scene_lifestyle",
+        "scene_lifestyle": "scene_lifestyle",
+        "lifestyle": "scene_lifestyle",
+        "material": "material_closeup",
+        "material_closeup": "material_closeup",
+        "closeup": "material_closeup",
+        "detail": "detail_callout",
+        "detail_callout": "detail_callout",
+        "spec": "spec_table",
+        "spec_table": "spec_table",
+        "parameter": "spec_table",
+        "size": "size_chart",
+        "size_chart": "size_chart",
+        "multi_angle": "multi_angle",
+        "angle": "multi_angle",
+        "comparison": "comparison",
+        "compare": "comparison",
+        "conversion": "conversion",
+        "summary": "conversion",
+    }
+    if text in aliases:
+        return aliases[text]
+    combined = f"{title} {copy}".lower()
+    if any(keyword in combined for keyword in ["模特", "上身", "试穿", "穿搭"]):
+        return "model_fit"
+    if any(keyword in combined for keyword in ["场景", "生活", "通勤", "出街", "家居", "使用"]):
+        return "scene_lifestyle"
+    if any(keyword in combined for keyword in ["材质", "面料", "纹理", "果肉", "质感"]):
+        return "material_closeup"
+    if any(keyword in combined for keyword in ["细节", "工艺", "领口", "袖口", "下摆", "接口", "局部"]):
+        return "detail_callout"
+    if any(keyword in combined for keyword in ["参数", "规格", "尺寸", "尺码", "成分"]):
+        return "spec_table"
+    if any(keyword in combined for keyword in ["角度", "正面", "侧面", "背面", "多角度"]):
+        return "multi_angle"
+    if any(keyword in combined for keyword in ["对比", "比较", "差异"]):
+        return "comparison"
+    if any(keyword in combined for keyword in ["总结", "下单", "转化", "购买", "收尾"]):
+        return "conversion"
+    if index == 0:
+        return "hero"
+    return "detail_callout"
+
+
+def _default_visual_goal_for_layout(layout_type: str, title: str, copy: str) -> str:
+    goals = {
+        "hero": "用商品主视觉建立第一眼认知，保留核心卖点但不要堆满大字。",
+        "social_cover": "做适合内容平台首图的吸引力封面，文字少、画面有记忆点。",
+        "model_fit": "展示真人或模特上身效果，重点看版型、比例、穿着状态和商品关键图案/结构。",
+        "scene_lifestyle": "把商品放入真实使用或穿搭场景，突出适用人群和使用氛围。",
+        "material_closeup": "用微距或局部放大展示材质、纹理、触感和可见品质。",
+        "detail_callout": "用标注线、局部放大框和少量信息卡说明关键结构或工艺细节。",
+        "spec_table": "用参数表、规格卡或信息图表达关键规格，不要做成大标题海报。",
+        "size_chart": "用尺码表、尺寸示意、身高体重建议或适配范围表达购买决策信息。",
+        "multi_angle": "用正面、侧面、背面或平铺组合展示商品完整外观。",
+        "comparison": "用对比栏、选择建议或差异卡片帮助用户快速判断。",
+        "conversion": "做详情页结尾总结，强化适合人群和购买理由，画面简洁有收束感。",
+    }
+    return goals.get(layout_type, copy or title)
+
+
+def _default_copy_density_for_layout(layout_type: str) -> str:
+    if layout_type in {"spec_table", "size_chart", "comparison"}:
+        return "high"
+    if layout_type in {"material_closeup", "detail_callout", "multi_angle"}:
+        return "medium"
+    return "low"
+
+
+def _bool_or_default(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    return default
+
+
+def _plan_name_mentions_inconsistent_count(name: str, image_count: int) -> bool:
+    text = str(name or "")
+    if not text:
+        return False
+    digit_counts = {
+        "1": 1,
+        "2": 2,
+        "3": 3,
+        "4": 4,
+        "5": 5,
+        "6": 6,
+        "7": 7,
+        "8": 8,
+        "9": 9,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    for token, count in digit_counts.items():
+        if f"{token}屏" in text or f"{token}张" in text or f"{token}图" in text:
+            return count != image_count
+    return False
+
+
+def _normalize_selected_ecommerce_plan(plan: dict[str, Any] | None, image_count: int) -> dict[str, Any] | None:
+    if not isinstance(plan, dict):
+        return None
+    try:
+        requested_count = max(1, min(9, int(image_count or plan.get("image_count") or 1)))
+    except (TypeError, ValueError):
+        requested_count = 1
+    request = EcommerceAnalyzeRequest(
+        product_name="",
+        materials=str(plan.get("materials") or ""),
+        selling_points=str(plan.get("selling_points") or ""),
+        scenarios=str(plan.get("scenarios") or ""),
+        platform=str(plan.get("platform") or ""),
+        style=str(plan.get("style") or ""),
+        extra_requirements=str(plan.get("extra_requirements") or ""),
+        image_count=requested_count,
+    )
+    normalized = _normalize_ecommerce_plan(plan, {}, request)
+    if normalized is None:
+        return None
+    normalized["image_count"] = requested_count
+    return normalized
+
+
+def _fallback_ecommerce_recommended_plans(analysis: dict[str, Any], request: EcommerceAnalyzeRequest) -> list[dict[str, Any]]:
+    product_name = request.product_name.strip() or str(analysis.get("product_type") or "商品").strip() or "商品"
+    materials = request.materials.strip() or str(analysis.get("visible_material") or "").strip()
+    selling_points = request.selling_points.strip() or _join_ecommerce_values(analysis.get("selling_points")) or "外观质感、实用价值、细节做工"
+    scenarios = request.scenarios.strip() or _join_ecommerce_values(analysis.get("use_scenarios")) or "日常使用、送礼、居家/办公/出行场景"
+    constraints = str(analysis.get("generation_constraints") or "").strip()
+    base_extra = request.extra_requirements.strip() or f"严格保持{product_name}主体一致。{constraints}".strip()
+    count = max(1, min(9, request.image_count or 4))
+    category = _infer_ecommerce_category(analysis, request)
+    detail_screens = _fallback_ecommerce_screens_for_category(count, category, "detail")
+    social_screens = _fallback_ecommerce_screens_for_category(count, category, "social")
+    simple_screens = _fallback_ecommerce_screens_for_category(count, category, "main")
+    return [
+        {
+            "name": f"淘宝详情页 {count} 屏转化方案",
+            "platform": request.platform.strip() or "淘宝/天猫/抖音商城",
+            "style": request.style.strip() or "高级、干净、统一电商详情页",
+            "image_count": count,
+            "materials": materials,
+            "selling_points": selling_points,
+            "scenarios": scenarios,
+            "extra_requirements": base_extra,
+            "reason": "适合直接做商品详情页，按卖点、场景、材质和转化顺序展开。",
+            "screens": detail_screens,
+        },
+        {
+            "name": f"小红书种草 {count} 屏方案",
+            "platform": "小红书/朋友圈",
+            "style": "自然种草、真实生活感、干净明亮、统一排版",
+            "image_count": count,
+            "materials": materials,
+            "selling_points": selling_points,
+            "scenarios": scenarios,
+            "extra_requirements": base_extra,
+            "reason": "适合做内容平台发布，强调使用感、场景感和购买理由。",
+            "screens": social_screens,
+        },
+        {
+            "name": f"白底主图加场景 {count} 屏方案",
+            "platform": request.platform.strip() or "淘宝/1688/独立站",
+            "style": "白底主图、清晰产品展示、少量高级阴影、商业摄影质感",
+            "image_count": count,
+            "materials": materials,
+            "selling_points": selling_points,
+            "scenarios": scenarios,
+            "extra_requirements": base_extra,
+            "reason": "适合用户还没有明确风格时，先产出更稳的主图和基础卖点图。",
+            "screens": simple_screens,
+        },
+    ]
+
+
+def _infer_ecommerce_category(analysis: dict[str, Any], request: EcommerceAnalyzeRequest) -> str:
+    text = " ".join(
+        [
+            request.product_name,
+            request.materials,
+            request.selling_points,
+            request.scenarios,
+            str(analysis.get("product_type") or ""),
+            str(analysis.get("appearance") or ""),
+            _join_ecommerce_values(analysis.get("details")),
+        ]
+    ).lower()
+    if any(keyword in text for keyword in ["榴莲", "水果", "生鲜", "果肉", "食品", "茶", "咖啡", "零食", "饮品"]):
+        return "fresh_food"
+    if any(keyword in text for keyword in ["t恤", "衣", "服装", "面料", "穿搭", "短袖", "裙", "裤", "鞋", "包"]):
+        return "fashion"
+    if any(keyword in text for keyword in ["插座", "地插", "电源", "数码", "手机", "耳机", "键盘", "设备", "电器"]):
+        return "electronics"
+    if any(keyword in text for keyword in ["抱枕", "家居", "沙发", "床", "家具", "收纳", "灯"]):
+        return "home"
+    return "general"
+
+
+def _fallback_ecommerce_screens_for_category(image_count: int, category: str, plan_kind: str) -> list[dict[str, str]]:
+    if category == "fresh_food":
+        detail = [
+            ("品种总览", "先把商品/品种/等级结构讲清楚，让用户快速知道这是什么。", "hero"),
+            ("高端推荐", "突出高阶款、热门款或主推款，解释适合什么口味。", "comparison"),
+            ("入门推荐", "给新手或大众用户一个不踩雷选择。", "comparison"),
+            ("口感风味对比", "按甜度、香气、软糯度、浓郁度做横向比较。", "comparison"),
+            ("颜色成熟度判断", "用颜色、纹理、果肉状态或外观特征说明怎么判断。", "material_closeup"),
+            ("新鲜度/品质细节", "展示可见材质、细节、纹理和新鲜状态。", "detail_callout"),
+            ("价格/规格参考", "说明不同规格、等级或预算怎么选。", "spec_table"),
+            ("适合人群/场景", "说明送礼、家庭分享、尝鲜、直播讲解等使用场景。", "scene_lifestyle"),
+            ("下单选择总结", "用简洁决策路径帮助用户完成购买选择。", "conversion"),
+        ]
+        social = [
+            ("种草封面", "用一句话讲清核心吸引点，适合内容平台首图。", "social_cover"),
+            ("为什么值得买", "用真实使用/品尝理由解释价值。", "scene_lifestyle"),
+            ("口感体验", "突出味觉、质地、香气和满足感。", "material_closeup"),
+            ("怎么挑不踩雷", "提供普通用户能理解的挑选方法。", "detail_callout"),
+            ("细节实拍感", "强调真实材质、果肉或外观细节。", "material_closeup"),
+            ("适合谁", "给不同口味、人群或预算推荐。", "comparison"),
+            ("场景代入", "放到家庭、聚会、送礼、门店或直播场景中。", "scene_lifestyle"),
+            ("对比总结", "把不同选择做成清晰对比。", "comparison"),
+            ("行动收尾", "给出清晰购买建议。", "conversion"),
+        ]
+        main = [
+            ("白底主视觉", "清楚展示商品主体和核心名称。", "hero"),
+            ("核心卖点", "用最少文字说明为什么选它。", "detail_callout"),
+            ("品种/规格", "展示主要品种、等级或规格差异。", "spec_table"),
+            ("口感/风味", "解释用户最关心的体验差异。", "comparison"),
+            ("细节特写", "突出真实质感和可见品质。", "material_closeup"),
+            ("挑选方法", "给出简单判断标准。", "detail_callout"),
+            ("场景用途", "说明适合什么销售或使用场景。", "scene_lifestyle"),
+            ("信任说明", "用标准化信息增强专业感。", "spec_table"),
+            ("购买总结", "收尾强化选择理由。", "conversion"),
+        ]
+    elif category == "fashion":
+        detail = [
+            ("主视觉上身", "展示商品整体版型和第一眼卖点。", "model_fit"),
+            ("版型参数", "用肩宽、胸围、衣长、袖长等参数或版型标注说明穿着轮廓。", "spec_table"),
+            ("正面图案细节", "用局部放大框展示印花/刺绣/图案位置、比例和工艺。", "detail_callout"),
+            ("面料质感", "展示材质、纹理、舒适度和垂坠感。", "material_closeup"),
+            ("场景穿搭", "展示通勤、约会、街头、居家等搭配场景。", "scene_lifestyle"),
+            ("尺码建议", "用尺码表或身高体重建议说明适合身形。", "size_chart"),
+            ("多角度展示", "展示正面、侧面、背面或平铺组合，说明商品完整外观。", "multi_angle"),
+            ("百搭优势", "说明不同单品组合和适用季节。", "comparison"),
+            ("转化总结", "强化购买理由和适合人群。", "conversion"),
+        ]
+        social = detail
+        main = detail
+    elif category == "electronics":
+        detail = [
+            ("产品主视觉", "展示产品外观和核心功能。", "hero"),
+            ("核心功能", "解释最重要的使用价值。", "detail_callout"),
+            ("结构细节", "展示接口、按键、材质、模块和尺寸。", "detail_callout"),
+            ("安装/使用", "说明使用方式或安装场景。", "scene_lifestyle"),
+            ("材质耐用", "突出材质、安全性、耐用性。", "material_closeup"),
+            ("参数规格", "清晰列出尺寸、规格、适配范围。", "spec_table"),
+            ("场景适配", "展示办公室、家用、商业等场景。", "scene_lifestyle"),
+            ("对比优势", "和常规方案做差异说明。", "comparison"),
+            ("购买总结", "收尾说明适合谁购买。", "conversion"),
+        ]
+        social = detail
+        main = detail
+    elif category == "home":
+        detail = [
+            ("家居主视觉", "展示商品整体和家居氛围。", "hero"),
+            ("舒适体验", "说明触感、支撑、使用感。", "scene_lifestyle"),
+            ("材质细节", "展示面料、填充、纹理或结构。", "material_closeup"),
+            ("使用场景", "展示沙发、床头、办公、休闲等场景。", "scene_lifestyle"),
+            ("尺寸适配", "说明尺寸、定制、适配范围。", "spec_table"),
+            ("细节工艺", "突出边角、走线、结构或耐用性。", "detail_callout"),
+            ("搭配优势", "展示与不同空间风格搭配。", "comparison"),
+            ("人群需求", "说明适合家庭、租房、办公等人群。", "scene_lifestyle"),
+            ("转化总结", "强化购买理由。", "conversion"),
+        ]
+        social = detail
+        main = detail
+    else:
+        detail = [
+            ("主视觉卖点", "突出产品核心利益点、主视觉和购买理由。", "hero"),
+            ("使用场景", "展示产品在真实生活、电商或目标场景中的使用方式。", "scene_lifestyle"),
+            ("材质/细节", "解释材质、触感、结构、工艺和品质细节。", "material_closeup"),
+            ("功能优势", "说明用户最关心的功能或价值。", "detail_callout"),
+            ("规格参数", "说明尺寸、规格、定制能力和适配范围。", "spec_table"),
+            ("场景搭配", "展示和不同环境、风格、用途的搭配优势。", "scene_lifestyle"),
+            ("细节特写", "用近景突出纹理、边缘、缝线、质感和细节。", "detail_callout"),
+            ("信任背书", "强调品质保障、耐用性、售后或适合人群。", "comparison"),
+            ("收尾转化", "做详情页结尾总结，强化购买行动。", "conversion"),
+        ]
+        social = detail
+        main = detail
+    titles = {"detail": detail, "social": social, "main": main}.get(plan_kind, detail)
+    return _fallback_ecommerce_screens(image_count, titles)
+
+
+def _fallback_ecommerce_screens(image_count: int, items: list[tuple[str, str, str] | tuple[str, str]]) -> list[dict[str, Any]]:
+    screens = []
+    for index in range(image_count):
+        item = items[index] if index < len(items) else (f"第 {index + 1} 屏", "补充一个不重复的产品详情模块。", "detail_callout")
+        title, copy = item[0], item[1]
+        layout_type = item[2] if len(item) >= 3 else _normalize_ecommerce_layout_type(None, title, copy, index)
+        screens.append(_normalize_ecommerce_screen({"title": title, "copy": copy, "layout_type": layout_type}, index=index))
+    return screens
 
 
 async def _parse_history_edit_request(
@@ -2319,6 +3029,26 @@ def _append_ecommerce_consistency_lock(prompt: str, ecommerce_analysis: dict[str
     return f"{prompt.strip()}\n\n" + "\n".join(rules)
 
 
+def _final_ecommerce_provider_prompt(prompt: str, plan_item: dict[str, Any], ecommerce_analysis: dict[str, Any] | None) -> str:
+    text = str(prompt or "").strip()
+    title = str(plan_item.get("title") or "").strip()
+    copy = str(plan_item.get("copy") or "").strip()
+    if title:
+        text = text.replace(f"栏目标签：{title}", "栏目标签：内部模块名，不作为画面文字")
+    rules = [
+        "画面文字规则：",
+        "后台模块名、方案屏幕名、栏目名只用于理解结构，禁止作为图片里的可见标题。",
+        "不要在图片中写出类似“种草封面”“第一眼亮点”“主视觉”“材质”“第1屏方案标题”这类后台模块名。",
+    ]
+    if title:
+        rules.append(f"本屏后台模块名是“{title}”，只能用于理解页面功能，不能原样显示在画面里。")
+    if copy:
+        rules.append(f"如需要可见文字，优先自然改写这句面向用户的文案：{copy}")
+    if isinstance(ecommerce_analysis, dict):
+        return _append_ecommerce_consistency_lock(f"{text}\n\n" + "\n".join(rules), ecommerce_analysis)
+    return f"{text}\n\n" + "\n".join(rules)
+
+
 def _parse_series_prompt_plan(text: str, image_count: int) -> dict[str, Any] | None:
     payload = _extract_json_object(text)
     if not isinstance(payload, dict):
@@ -2333,11 +3063,14 @@ def _parse_series_prompt_plan(text: str, image_count: int) -> dict[str, Any] | N
         item_prompt = str(item.get("prompt") or "").strip()
         if not item_prompt:
             continue
+        screen = _normalize_ecommerce_screen(item, index=index - 1)
         items.append(
             {
                 "index": index,
-                "title": str(item.get("title") or f"第 {index} 屏").strip(),
-                "copy": str(item.get("copy") or "").strip(),
+                "title": screen["title"] or f"第 {index} 屏",
+                "copy": screen["copy"],
+                "layout_type": screen["layout_type"],
+                "visual_goal": screen["visual_goal"],
                 "prompt": item_prompt,
             }
         )
@@ -2395,37 +3128,195 @@ def _fallback_series_prompt_plan(
     quality: str,
 ) -> dict[str, Any]:
     modules = [
-        ("核心卖点", "突出产品核心利益点、主视觉和购买理由。"),
-        ("使用场景", "展示产品在真实生活、电商或目标场景中的使用方式。"),
-        ("材质工艺", "解释材质、触感、结构、工艺和品质细节。"),
-        ("成分结构", "拆解填充、面料、内部结构或关键参数。"),
-        ("尺寸定制", "说明尺寸、规格、定制能力和适配范围。"),
-        ("百搭优势", "展示和不同环境、风格、用途的搭配优势。"),
-        ("细节特写", "用近景突出纹理、边缘、缝线、质感和细节。"),
-        ("信任背书", "强调品质保障、耐用性、售后或适合人群。"),
-        ("收尾转化", "做详情页结尾总结，强化品牌感和购买行动。"),
+        ("核心卖点", "突出产品核心利益点、主视觉和购买理由。", "hero"),
+        ("使用场景", "展示产品在真实生活、电商或目标场景中的使用方式。", "scene_lifestyle"),
+        ("材质工艺", "解释材质、触感、结构、工艺和品质细节。", "material_closeup"),
+        ("成分结构", "拆解填充、面料、内部结构或关键参数。", "detail_callout"),
+        ("尺寸定制", "说明尺寸、规格、定制能力和适配范围。", "spec_table"),
+        ("百搭优势", "展示和不同环境、风格、用途的搭配优势。", "comparison"),
+        ("细节特写", "用近景突出纹理、边缘、缝线、质感和细节。", "detail_callout"),
+        ("信任背书", "强调品质保障、耐用性、售后或适合人群。", "comparison"),
+        ("收尾转化", "做详情页结尾总结，强化品牌感和购买行动。", "conversion"),
     ]
     style_guide = (
         f"统一系列视觉：{aspect_ratio} 竖版/横版构图按参数执行，{size}，{quality} quality；"
-        "同一产品主体、同一色调、同一字体样式、同一标题和正文排版网格、同一电商详情页视觉系统；"
+        "同一产品主体、同一色调、同一字体样式、同一文字层级和排版网格、同一电商详情页视觉系统；"
         "标题简洁可读，正文短句清晰，避免乱码和不一致的品牌符号。"
     )
     if mode == "edit":
         style_guide += " 严格参考上传图片中的产品主体、外观、材质和结构，保持产品一致性。"
     items = []
     for index in range(1, image_count + 1):
-        title, copy = modules[index - 1] if index <= len(modules) else (f"第 {index} 屏", "补充一个不重复的产品详情模块。")
+        title, copy, layout_type = modules[index - 1] if index <= len(modules) else (f"第 {index} 屏", "补充一个不重复的产品详情模块。", "detail_callout")
+        screen = _normalize_ecommerce_screen({"title": title, "copy": copy, "layout_type": layout_type}, index=index - 1)
         prompt_parts = [
             f"{prompt.strip()}",
-            f"这是同一套系列详情页的第 {index}/{image_count} 屏，主题标题：{title}。",
-            f"本屏说明文案：{copy}",
+            f"这是同一套系列详情页的第 {index}/{image_count} 屏，页面类型：{screen['layout_type']}。",
+            f"本屏内容说明：{screen['copy']}",
+            f"本屏视觉目标：{screen['visual_goal']}",
             style_guide,
-            "本屏必须和其他屏保持统一色调、字体、标题位置、正文排版、产品比例和视觉语言，但内容模块不能重复。",
+            _layout_prompt_instruction(screen),
+            "本屏必须和其他屏保持统一色调、字体、产品比例和视觉语言，但内容模块不能重复。不要机械做成大标题卡片，不要把后台模块名写进图片。",
         ]
         if mode == "edit":
             prompt_parts.append("根据上传参考图中的同一个产品生成本屏，产品外观必须一致。")
-        items.append({"index": index, "title": title, "copy": copy, "prompt": "\n".join(prompt_parts)})
+        items.append({**screen, "index": index, "prompt": "\n".join(prompt_parts)})
     return {"style_guide": style_guide, "items": items}
+
+
+def _fallback_selected_plan_prompt_plan(
+    *,
+    selected_plan: dict[str, Any],
+    prompt: str,
+    mode: str,
+    image_count: int,
+    size: str,
+    aspect_ratio: str,
+    quality: str,
+) -> dict[str, Any]:
+    screens = selected_plan.get("screens") if isinstance(selected_plan, dict) else []
+    if not isinstance(screens, list):
+        screens = []
+    style = str(selected_plan.get("style") or "").strip()
+    platform = str(selected_plan.get("platform") or "").strip()
+    plan_name = str(selected_plan.get("name") or "").strip()
+    style_guide = (
+        f"严格按已选方案“{plan_name or '电商方案'}”生成；{aspect_ratio} 构图，{size}，{quality} quality；"
+        f"平台方向：{platform or '通用电商'}；视觉风格：{style or '高级、干净、统一电商详情页'}；"
+        "保持同一商品主体、同一色调、同一字体样式、同一文字层级和排版网格。"
+    )
+    if mode == "edit":
+        style_guide += " 严格参考上传商品图，商品外观、颜色、材质、结构和比例必须一致。"
+    items: list[dict[str, Any]] = []
+    for index in range(1, image_count + 1):
+        screen = screens[index - 1] if index - 1 < len(screens) and isinstance(screens[index - 1], dict) else {}
+        normalized_screen = _normalize_ecommerce_screen(
+            {
+                "title": screen.get("title") or f"第 {index} 屏",
+                "copy": screen.get("copy") or "按已选方案补充一个不重复的产品详情模块。",
+                "layout_type": screen.get("layout_type"),
+                "visual_goal": screen.get("visual_goal"),
+                "copy_density": screen.get("copy_density"),
+                "needs_model": screen.get("needs_model"),
+                "needs_specs": screen.get("needs_specs"),
+                "needs_closeup": screen.get("needs_closeup"),
+                "reference_focus": screen.get("reference_focus"),
+            },
+            index=index - 1,
+        )
+        prompt_parts = [
+            prompt.strip(),
+            f"已选方案：{plan_name or '电商方案'}。",
+            f"这是第 {index}/{image_count} 屏，必须严格对应页面类型：{normalized_screen['layout_type']}。",
+            f"本屏内容说明：{normalized_screen['copy']}",
+            f"本屏视觉目标：{normalized_screen['visual_goal']}",
+            style_guide,
+            _layout_prompt_instruction(normalized_screen),
+            "不得改变本屏主题，不得重新拆分为其他内容；只允许扩写画面构图、商品展示、背景、文案层级和细节表达。不要每张都做成大标题海报，不要把后台模块名写进图片。",
+        ]
+        if mode == "edit":
+            prompt_parts.append("根据上传参考图中的同一个产品生成本屏，产品外观必须一致。")
+        items.append({**normalized_screen, "index": index, "prompt": "\n".join(prompt_parts)})
+    return {"style_guide": style_guide, "items": items}
+
+
+def _layout_prompt_instruction(screen: dict[str, Any]) -> str:
+    layout_type = str(screen.get("layout_type") or "")
+    copy_density = str(screen.get("copy_density") or "medium")
+    instructions = {
+        "hero": "构图要求：商品占画面主导，少量核心卖点信息卡，标题可以小而清晰，不要满屏文字。",
+        "social_cover": "构图要求：封面感强，商品和使用结果有吸引力，文字控制在一句主张和少量标签。",
+        "model_fit": "构图要求：使用真人或模特上身/使用展示，重点表现版型、比例、穿着状态，商品关键图案和结构必须完整可见。",
+        "scene_lifestyle": "构图要求：真实场景化展示，环境服务于商品，不要让道具和文字遮挡主体。",
+        "material_closeup": "构图要求：局部微距、质感放大、材质纹理清楚，可用小标注线，避免大面积标题。",
+        "detail_callout": "构图要求：局部放大框、标注线、信息卡说明细节，商品主体和细节区域同时可见。",
+        "spec_table": "构图要求：参数表/规格卡/信息图为主，数据分组清晰，商品在旁辅助展示，文字密度可以较高但要整齐。",
+        "size_chart": "构图要求：尺码表、尺寸示意线、身高体重建议或适配范围清楚，不要只放一句标题。",
+        "multi_angle": "构图要求：正面、侧面、背面或平铺多角度组合，比例统一，标注少而准。",
+        "comparison": "构图要求：用左右对比、分栏选择建议或差异卡片表达，不要变成单张口号海报。",
+        "conversion": "构图要求：详情页结尾收束，商品、适合人群、购买理由三者清楚，文字简短有购买决策感。",
+    }
+    density_rules = {
+        "low": "文字策略：低文字密度，1 句面向用户的短文案或少量卖点标签以内，不使用后台模块名。",
+        "medium": "文字策略：中文字密度，可使用 2-4 个短标签或标注点。",
+        "high": "文字策略：高信息密度，适合表格/参数/对比，但必须整齐可读。",
+    }
+    return "\n".join(
+        [
+            instructions.get(layout_type, "构图要求：按本屏页面类型做真实详情页模块，避免重复标题卡片。"),
+            density_rules.get(copy_density, density_rules["medium"]),
+        ]
+    )
+
+
+async def _ensure_ecommerce_analysis_for_task(
+    db: Database,
+    settings: Settings,
+    provider: OpenAICompatibleImageClient,
+    *,
+    task_id: str,
+    request_payload: dict[str, Any],
+    prompt: str,
+    config: dict[str, Any],
+    image_count: int,
+) -> dict[str, Any]:
+    ecommerce = request_payload.get("ecommerce")
+    if not isinstance(ecommerce, dict):
+        return {}
+    existing = ecommerce.get("analysis")
+    if isinstance(existing, dict):
+        return existing
+
+    uploads = request_payload.get("uploads")
+    if not isinstance(uploads, list) or not uploads:
+        return {}
+    db.update_image_task(
+        task_id,
+        {
+            "result": {
+                "count_requested": image_count,
+                "count_succeeded": 0,
+                "ecommerce_analysis": None,
+                "stage": "analyzing",
+                "selected_plan": ecommerce.get("selected_plan") if isinstance(ecommerce.get("selected_plan"), dict) else None,
+                "usage": [],
+                "partial_errors": [],
+            },
+        },
+    )
+    request = EcommerceAnalyzeRequest(
+        product_name=str(ecommerce.get("product_name") or ""),
+        materials=str(ecommerce.get("materials") or ""),
+        selling_points=str(ecommerce.get("selling_points") or ""),
+        scenarios=str(ecommerce.get("scenarios") or ""),
+        platform=str(ecommerce.get("platform") or ""),
+        style=str(ecommerce.get("style") or ""),
+        extra_requirements=str(ecommerce.get("extra_requirements") or ""),
+        image_count=image_count,
+        size=str(request_payload.get("fields", {}).get("size") or "") if isinstance(request_payload.get("fields"), dict) else "",
+        aspect_ratio="",
+    )
+    analysis = await _analyze_ecommerce_product(
+        provider,
+        config,
+        settings,
+        upload=uploads[0],
+        uploads=uploads,
+        prompt=prompt,
+        request=request,
+    )
+    ecommerce["analysis"] = analysis
+    ecommerce["analysis_status"] = "ready"
+    request_payload["ecommerce"] = ecommerce
+    fields = request_payload.get("fields")
+    if isinstance(fields, dict):
+        fields["prompt"] = _append_reference_notes_to_prompt(
+            _append_ecommerce_consistency_lock(prompt, analysis),
+            uploads,
+        )
+        request_payload["fields"] = fields
+    db.update_image_task(task_id, {"request": request_payload})
+    return analysis
 
 
 def _provider_image_size(size: str, aspect_ratio: str | None = None) -> str:
@@ -2666,6 +3557,64 @@ def _public_image_task(db: Database, owner_id: str, task: dict[str, Any]) -> dic
     }
 
 
+def _provider_error_message(exc: ProviderError) -> str:
+    return _normalize_error_message(exc.message, exc.payload)
+
+
+def _exception_message(exc: Exception) -> str:
+    if isinstance(exc, ProviderError):
+        return _provider_error_message(exc)
+    message = str(exc).strip()
+    if message:
+        return _normalize_error_message(message)
+    return _normalize_error_message(exc.__class__.__name__)
+
+
+def _normalize_error_message(message: Any, payload: Any | None = None) -> str:
+    text = str(message or "").strip()
+    payload_type = ""
+    payload_message = ""
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            payload_type = str(error.get("type") or "").strip()
+            payload_message = str(error.get("message") or "").strip()
+        else:
+            payload_type = str(payload.get("type") or "").strip()
+            payload_message = str(payload.get("message") or payload.get("error") or "").strip()
+
+    combined = " ".join(item for item in [payload_type, payload_message, text] if item).lower()
+    if "insufficient" in combined and "balance" in combined:
+        return "余额不足，请充值或更换 API Key 后重试"
+    if "billing_error" in combined and "balance" in combined:
+        return "余额不足，请充值或更换 API Key 后重试"
+    if "quota" in combined and ("exceeded" in combined or "insufficient" in combined):
+        return "额度不足，请充值或更换 API Key 后重试"
+    if text:
+        return text
+    if payload_message:
+        return payload_message
+    if payload_type:
+        return payload_type
+    return "任务失败，请稍后重试"
+
+
+def _first_partial_error_message(partial_errors: list[dict[str, Any]]) -> str:
+    for item in partial_errors:
+        message = _normalize_error_message(item.get("error"), item.get("provider_response"))
+        if message:
+            return message
+    return "图片批量生成失败"
+
+
+def _batch_partial_error_message(partial_errors: list[dict[str, Any]]) -> str:
+    first_message = _first_partial_error_message(partial_errors)
+    count = len(partial_errors)
+    if count <= 0:
+        return ""
+    return f"{count} 张图片生成失败：{first_message}"
+
+
 def _schedule_image_task(app: FastAPI, task_id: str) -> None:
     existing = app.state.image_tasks.get(task_id)
     if existing is not None and not existing.done():
@@ -2753,7 +3702,8 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
             saved_mask = request_payload.get("mask")
             mask_file = _load_saved_upload(saved_mask) if isinstance(saved_mask, dict) else None
             requested_count = _request_image_count(fields)
-            if requested_count > 1:
+            is_ecommerce_create = isinstance(request_payload.get("ecommerce"), dict) and not request_payload.get("source_history_id")
+            if requested_count > 1 or is_ecommerce_create:
                 await _run_series_image_task(
                     db,
                     settings,
@@ -2828,6 +3778,7 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
         )
         raise
     except ProviderError as exc:
+        message = _provider_error_message(exc)
         latest_task = db.get_image_task_by_id(task_id) or task
         failed = _record_failed_history(
             db,
@@ -2839,7 +3790,7 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
             size=latest_task["size"],
             aspect_ratio=latest_task.get("aspect_ratio") or "",
             quality=latest_task["quality"],
-            message=exc.message,
+            message=message,
             provider_response=exc.payload,
             input_image_url=latest_task.get("input_image_url"),
             input_image_path=latest_task.get("input_image_path"),
@@ -2850,11 +3801,12 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
                 "status": "failed",
                 "completed_at": utc_now(),
                 "result_history_ids": [failed["id"]] if failed else [],
-                "result": {"error": exc.message, "usage": None},
-                "error": exc.message,
+                "result": {"error": message, "usage": None},
+                "error": message,
             },
         )
     except Exception as exc:
+        message = _exception_message(exc)
         latest_task = db.get_image_task_by_id(task_id) or task
         failed = _record_failed_history(
             db,
@@ -2866,7 +3818,7 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
             size=latest_task["size"],
             aspect_ratio=latest_task.get("aspect_ratio") or "",
             quality=latest_task["quality"],
-            message=str(exc),
+            message=message,
             provider_response=None,
             input_image_url=latest_task.get("input_image_url"),
             input_image_path=latest_task.get("input_image_path"),
@@ -2877,8 +3829,8 @@ async def _run_image_task(app: FastAPI, task_id: str) -> None:
                 "status": "failed",
                 "completed_at": utc_now(),
                 "result_history_ids": [failed["id"]] if failed else [],
-                "result": {"error": str(exc), "usage": None},
-                "error": str(exc),
+                "result": {"error": message, "usage": None},
+                "error": message,
             },
         )
 
@@ -2906,13 +3858,52 @@ async def _run_series_image_task(
     ecommerce_context = request_payload.get("ecommerce")
     if isinstance(ecommerce_context, dict):
         ecommerce_analysis = ecommerce_context.get("analysis")
+        if not isinstance(ecommerce_analysis, dict) and image_files:
+            ecommerce_analysis = await _ensure_ecommerce_analysis_for_task(
+                db,
+                settings,
+                provider,
+                task_id=task_id,
+                request_payload=request_payload,
+                prompt=latest_for_plan["prompt"],
+                config=config,
+                image_count=image_count,
+            )
+            ecommerce_context = request_payload.get("ecommerce")
+    selected_plan = None
+    if isinstance(ecommerce_context, dict):
+        selected_plan = _normalize_selected_ecommerce_plan(
+            ecommerce_context.get("selected_plan") if isinstance(ecommerce_context.get("selected_plan"), dict) else None,
+            image_count,
+        )
     reference_note_prompt = _reference_notes_text(request_payload.get("uploads") or [])
     planning_prompt = latest_for_plan["prompt"]
+    if isinstance(ecommerce_context, dict) and not isinstance(ecommerce_analysis, dict):
+        db.update_image_task(
+            task_id,
+            {
+                "result": {
+                    "count_requested": image_count,
+                    "count_succeeded": 0,
+                    "ecommerce_analysis": None,
+                    "stage": "analyzing",
+                    "selected_plan": None,
+                    "usage": [],
+                    "partial_errors": [],
+                },
+            },
+        )
     if isinstance(ecommerce_analysis, dict):
         planning_prompt = (
             f"{planning_prompt}\n\n"
             "商品图识别结果：\n"
             f"{json.dumps(ecommerce_analysis, ensure_ascii=False)}"
+        )
+    if isinstance(selected_plan, dict):
+        planning_prompt = (
+            f"{planning_prompt}\n\n"
+            "用户已选定电商方案蓝图，最终每一屏必须严格按该方案 screens 执行：\n"
+            f"{json.dumps(selected_plan, ensure_ascii=False)}"
         )
     if reference_note_prompt:
         planning_prompt = f"{planning_prompt}\n\n{reference_note_prompt}"
@@ -2927,29 +3918,44 @@ async def _run_series_image_task(
         size=latest_for_plan["size"],
         aspect_ratio=latest_for_plan.get("aspect_ratio") or "",
         quality=latest_for_plan["quality"],
+        selected_plan=selected_plan,
     )
     plan_items = plan.get("items") if isinstance(plan, dict) else []
     if not isinstance(plan_items, list) or len(plan_items) != image_count:
-        plan = _fallback_series_prompt_plan(
-            prompt=planning_prompt,
-            mode=latest_for_plan["mode"],
-            image_count=image_count,
-            size=latest_for_plan["size"],
-            aspect_ratio=latest_for_plan.get("aspect_ratio") or "",
-            quality=latest_for_plan["quality"],
-        )
-        plan["source"] = "fallback"
+        if selected_plan:
+            plan = _fallback_selected_plan_prompt_plan(
+                selected_plan=selected_plan,
+                prompt=planning_prompt,
+                mode=latest_for_plan["mode"],
+                image_count=image_count,
+                size=latest_for_plan["size"],
+                aspect_ratio=latest_for_plan.get("aspect_ratio") or "",
+                quality=latest_for_plan["quality"],
+            )
+            plan["source"] = "selected_plan_fallback"
+        else:
+            plan = _fallback_series_prompt_plan(
+                prompt=planning_prompt,
+                mode=latest_for_plan["mode"],
+                image_count=image_count,
+                size=latest_for_plan["size"],
+                aspect_ratio=latest_for_plan.get("aspect_ratio") or "",
+                quality=latest_for_plan["quality"],
+            )
+            plan["source"] = "fallback"
         plan_items = plan["items"]
 
     db.update_image_task(
         task_id,
         {
-            "result": {
-                "count_requested": image_count,
-                "count_succeeded": 0,
-                "ecommerce_analysis": ecommerce_analysis,
-                "series_plan": _public_series_plan(plan),
-                "usage": [],
+                "result": {
+                    "count_requested": image_count,
+                    "count_succeeded": 0,
+                    "ecommerce_analysis": ecommerce_analysis,
+                    "stage": "planning",
+                    "selected_plan": selected_plan,
+                    "series_plan": _public_series_plan(plan),
+                    "usage": [],
                 "partial_errors": [],
             },
         },
@@ -2960,8 +3966,8 @@ async def _run_series_image_task(
         plan_item = plan_items[index] if index < len(plan_items) and isinstance(plan_items[index], dict) else {}
         item_prompt = str(plan_item.get("prompt") or latest_task["prompt"]).strip()
         provider_item_prompt = (
-            _append_ecommerce_consistency_lock(item_prompt, ecommerce_analysis)
-            if isinstance(ecommerce_analysis, dict)
+            _final_ecommerce_provider_prompt(item_prompt, plan_item, ecommerce_analysis)
+            if isinstance(ecommerce_context, dict)
             else item_prompt
         )
         if reference_note_prompt:
@@ -3008,6 +4014,7 @@ async def _run_series_image_task(
                 input_image_url=latest_task.get("input_image_url"),
                 input_image_path=latest_task.get("input_image_path"),
                 batch_index=len(history_ids),
+                replace_history_id=_replace_history_id_for_task(request_payload, latest_task) if image_count == 1 else None,
             )
             history_ids.extend(item["id"] for item in items)
             usage_items.append(provider_response.get("usage"))
@@ -3020,6 +4027,8 @@ async def _run_series_image_task(
                         "count_requested": image_count,
                         "count_succeeded": len(history_ids),
                         "ecommerce_analysis": ecommerce_analysis,
+                        "stage": "generating",
+                        "selected_plan": selected_plan,
                         "series_plan": _public_series_plan(plan),
                         "usage": usage_items,
                         "partial_errors": partial_errors,
@@ -3027,9 +4036,9 @@ async def _run_series_image_task(
                 },
             )
         except ProviderError as exc:
-            partial_errors.append({"index": index, "error": exc.message, "provider_response": exc.payload})
+            partial_errors.append({"index": index, "error": _provider_error_message(exc), "provider_response": exc.payload})
         except Exception as exc:
-            partial_errors.append({"index": index, "error": str(exc), "provider_response": None})
+            partial_errors.append({"index": index, "error": _exception_message(exc), "provider_response": None})
 
     completed_at = utc_now()
     if history_ids:
@@ -3046,15 +4055,17 @@ async def _run_series_image_task(
                     "count_requested": image_count,
                     "count_succeeded": len(history_ids),
                     "ecommerce_analysis": ecommerce_analysis,
+                    "stage": "completed",
+                    "selected_plan": selected_plan,
                     "series_plan": _public_series_plan(plan),
                     "partial_errors": partial_errors,
                 },
-                "error": None if not partial_errors else f"{len(partial_errors)} image(s) failed in this batch",
+                "error": None if not partial_errors else _batch_partial_error_message(partial_errors),
             },
         )
         return
 
-    message = partial_errors[0]["error"] if partial_errors else "Image batch generation failed"
+    message = _first_partial_error_message(partial_errors) if partial_errors else "图片批量生成失败"
     latest_task = db.get_image_task_by_id(task_id) or task
     failed = _record_failed_history(
         db,
@@ -3083,6 +4094,8 @@ async def _run_series_image_task(
                 "count_requested": image_count,
                 "count_succeeded": 0,
                 "ecommerce_analysis": ecommerce_analysis,
+                "stage": "failed",
+                "selected_plan": selected_plan,
                 "series_plan": _public_series_plan(plan),
                 "partial_errors": partial_errors,
             },
@@ -3100,6 +4113,8 @@ def _public_series_plan(plan: dict[str, Any]) -> dict[str, Any]:
                 "index": item.get("index"),
                 "title": item.get("title") or "",
                 "copy": item.get("copy") or "",
+                "layout_type": item.get("layout_type") or "",
+                "visual_goal": item.get("visual_goal") or "",
                 "prompt": item.get("prompt") or "",
             }
             for item in plan.get("items", [])
@@ -3234,6 +4249,8 @@ async def _call_provider_with_retries(operation) -> dict[str, Any]:
 
 
 def _is_retryable_provider_error(exc: ProviderError) -> bool:
+    if _is_billing_provider_error(exc):
+        return False
     if exc.status_code not in RETRYABLE_PROVIDER_STATUS_CODES:
         return False
     payload = exc.payload
@@ -3249,11 +4266,24 @@ def _is_retryable_provider_error(exc: ProviderError) -> bool:
         message = str(payload.get("message") or payload.get("error") or "")
 
     lowered = message.lower()
-    if "insufficient" in lowered or "balance" in lowered:
-        return False
     if error_type in {"upstream_error", "rate_limit_error", "server_error"}:
         return True
     return "upstream" in lowered or "temporarily unavailable" in lowered
+
+
+def _is_billing_provider_error(exc: ProviderError) -> bool:
+    return _normalize_error_message(exc.message, exc.payload) in {
+        "余额不足，请充值或更换 API Key 后重试",
+        "额度不足，请充值或更换 API Key 后重试",
+    }
+
+
+def _should_surface_provider_error(exc: ProviderError) -> bool:
+    if _is_billing_provider_error(exc):
+        return True
+    if exc.status_code in {400, 401, 402, 403}:
+        return True
+    return False
 
 
 def _record_failed_history(
@@ -3297,7 +4327,7 @@ async def _safe_usage(provider: OpenAICompatibleImageClient, config: dict[str, A
     try:
         return await provider.usage(config)
     except ProviderError as exc:
-        return {"ok": False, "remaining": None, "message": exc.message, "raw": exc.payload}
+        return {"ok": False, "remaining": None, "message": _provider_error_message(exc), "raw": exc.payload}
 
 
 app = create_app()

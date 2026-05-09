@@ -82,7 +82,28 @@ class FakeProvider:
                                     "colors": ["奶油白"],
                                     "shape": "方形",
                                     "details": ["边角圆润", "表面柔软"],
+                                    "selling_points": ["蓬松回弹", "柔软亲肤"],
+                                    "target_audience": ["家居用户"],
+                                    "use_scenarios": ["沙发", "床头"],
+                                    "style_suggestions": ["奶油风电商详情页", "小红书种草"],
                                     "generation_constraints": "保持白色方形抱枕芯主体、颜色、比例和布料质感一致",
+                                    "recommended_plans": [
+                                        {
+                                            "name": "淘宝详情页方案",
+                                            "platform": "淘宝",
+                                            "style": "奶油风电商详情页",
+                                            "image_count": 4,
+                                            "materials": "细腻磨毛布料",
+                                            "selling_points": "蓬松回弹、柔软亲肤",
+                                            "scenarios": "沙发、床头",
+                                            "extra_requirements": "保持白色方形抱枕芯一致",
+                                            "reason": "适合直接做详情页转化",
+                                            "screens": [
+                                                {"title": "主视觉", "copy": "展示商品和核心卖点", "layout_type": "hero"},
+                                                {"title": "材质", "copy": "展示柔软布料", "layout_type": "material_closeup"},
+                                            ],
+                                        }
+                                    ],
                                 },
                                 ensure_ascii=False,
                             ),
@@ -95,12 +116,15 @@ class FakeProvider:
             user_content = payload["messages"][1]["content"]
             count = 1
             mode = "generate"
+            selected_plan = None
             try:
                 context = json.loads(user_content[user_content.index("{") : user_content.rindex("}") + 1])
                 count = int(context.get("image_count") or 1)
                 mode = str(context.get("mode") or "generate")
+                selected_plan = context.get("selected_plan") if isinstance(context.get("selected_plan"), dict) else None
             except Exception:
                 pass
+            selected_screens = selected_plan.get("screens") if isinstance(selected_plan, dict) else None
             return {
                 "id": "chatcmpl-series-test",
                 "choices": [
@@ -113,9 +137,27 @@ class FakeProvider:
                                     "items": [
                                         {
                                             "index": index,
-                                            "title": f"第{index}屏",
-                                            "copy": f"{mode} 模块 {index}",
-                                            "prompt": f"系列拆解提示词 {mode} 第{index}屏，统一风格，内容模块不同",
+                                            "title": (
+                                                selected_screens[index - 1].get("title")
+                                                if isinstance(selected_screens, list)
+                                                and index - 1 < len(selected_screens)
+                                                and isinstance(selected_screens[index - 1], dict)
+                                                else f"第{index}屏"
+                                            ),
+                                            "copy": (
+                                                selected_screens[index - 1].get("copy")
+                                                if isinstance(selected_screens, list)
+                                                and index - 1 < len(selected_screens)
+                                                and isinstance(selected_screens[index - 1], dict)
+                                                else f"{mode} 模块 {index}"
+                                            ),
+                                            "prompt": (
+                                                f"按已选方案扩写 {selected_screens[index - 1].get('layout_type', '')} {selected_screens[index - 1].get('title')} 第{index}屏"
+                                                if isinstance(selected_screens, list)
+                                                and index - 1 < len(selected_screens)
+                                                and isinstance(selected_screens[index - 1], dict)
+                                                else f"系列拆解提示词 {mode} 第{index}屏，统一风格，内容模块不同"
+                                            ),
                                         }
                                         for index in range(1, count + 1)
                                     ],
@@ -180,6 +222,59 @@ class FlakyProvider(FakeProvider):
                 502,
                 "Upstream request failed",
                 {"error": {"message": "Upstream request failed", "type": "upstream_error"}},
+            )
+        return await super().generate_image(config, payload)
+
+
+class BillingErrorProvider(FakeProvider):
+    async def generate_image(self, config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        raise ProviderError(
+            402,
+            "insufficient balance",
+            {"error": {"message": "insufficient balance", "type": "billing_error"}},
+        )
+
+    async def edit_image(
+        self,
+        config: dict[str, Any],
+        fields: dict[str, Any],
+        images: list[tuple[str, bytes, str]],
+        mask: tuple[str, bytes, str] | None = None,
+    ) -> dict[str, Any]:
+        raise ProviderError(
+            402,
+            "insufficient balance",
+            {"error": {"message": "insufficient balance", "type": "billing_error"}},
+        )
+
+    async def chat_completion(self, config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        raise ProviderError(
+            402,
+            "insufficient balance",
+            {"error": {"message": "insufficient balance", "type": "billing_error"}},
+        )
+
+
+class ChatErrorProvider(FakeProvider):
+    async def chat_completion(self, config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        raise ProviderError(
+            502,
+            "Upstream request failed",
+            {"error": {"message": "Upstream request failed", "type": "upstream_error"}},
+        )
+
+
+class PartiallyBillingErrorProvider(FakeProvider):
+    def __init__(self, fail_after: int) -> None:
+        super().__init__()
+        self.fail_after = fail_after
+
+    async def generate_image(self, config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        if len(self.generated_payloads) >= self.fail_after:
+            raise ProviderError(
+                402,
+                "insufficient balance",
+                {"error": {"message": "insufficient balance", "type": "billing_error"}},
             )
         return await super().generate_image(config, payload)
 
@@ -522,6 +617,159 @@ def test_ecommerce_publish_copy_uses_current_provider_key(tmp_path: Path) -> Non
         assert "可定做尺寸" in chat_payload["messages"][1]["content"]
 
 
+def test_ecommerce_analyze_returns_product_plans(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        response = client.post(
+            "/api/ecommerce/analyze",
+            data={
+                "product_name": "天鹅绒PP棉抱枕芯",
+                "materials": "",
+                "selling_points": "",
+                "scenarios": "",
+                "platform": "淘宝",
+                "style": "",
+                "image_count": "4",
+                "size": "1152x2048",
+                "aspect_ratio": "9:16",
+                "reference_notes": json.dumps(
+                    [
+                        {"index": 0, "role": "正面", "primary": True},
+                        {"index": 1, "role": "侧面", "note": "参考侧边蓬松厚度"},
+                    ],
+                    ensure_ascii=False,
+                ),
+            },
+            files=[
+                ("image", ("front.png", b"fake-front", "image/png")),
+                ("reference_image", ("side.png", b"fake-side", "image/png")),
+            ],
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["analysis"]["source"] == "vision"
+        assert payload["analysis"]["product_type"] == "抱枕芯"
+        assert payload["form"]["materials"] == "细腻磨毛布料"
+        assert "蓬松回弹" in payload["form"]["selling_points"]
+        assert len(payload["plans"]) == 3
+        assert payload["plans"][0]["name"] == "淘宝详情页 4 屏转化方案"
+        assert payload["plans"][0]["image_count"] == 4
+        assert len(payload["plans"][0]["screens"]) == 4
+        assert payload["plans"][0]["screens"][0]["layout_type"] == "hero"
+        assert payload["plans"][0]["screens"][0]["visual_goal"]
+        assert payload["reference_notes"][1]["role"] == "侧面"
+        analyzer_payload = provider.chat_payloads[-1]
+        assert "电商商品图识别分析师" in analyzer_payload["messages"][0]["content"]
+        analyzer_content = analyzer_payload["messages"][1]["content"]
+        assert sum(1 for item in analyzer_content if item.get("type") == "image_url") == 2
+        assert "参考侧边蓬松厚度" in analyzer_content[0]["text"]
+
+
+def test_ecommerce_analyze_forces_user_selected_plan_count(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        response = client.post(
+            "/api/ecommerce/analyze",
+            data={
+                "product_name": "榴莲大全",
+                "image_count": "9",
+            },
+            files={"image": ("durian.png", b"fake-product", "image/png")},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["form"]["image_count"] == 9
+        assert payload["plans"][0]["image_count"] == 9
+        assert len(payload["plans"][0]["screens"]) == 9
+        assert {screen["layout_type"] for screen in payload["plans"][0]["screens"]} >= {"hero", "comparison", "spec_table", "conversion"}
+        assert "四屏" not in payload["plans"][0]["name"]
+        assert payload["plans"][0]["name"].endswith("9 屏转化方案")
+
+
+def test_ecommerce_analyze_uses_category_fallback_for_fresh_food(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        response = client.post(
+            "/api/ecommerce/analyze",
+            data={
+                "product_name": "榴莲大全",
+                "materials": "榴莲果肉",
+                "selling_points": "不同品种榴莲口感价格外貌对比",
+                "scenarios": "水果摊、商超、直播讲解",
+                "image_count": "9",
+            },
+            files={"image": ("durian.png", b"fake-product", "image/png")},
+        )
+
+        assert response.status_code == 200
+        screens = response.json()["plans"][0]["screens"]
+        titles = [screen["title"] for screen in screens]
+        assert titles == [
+            "品种总览",
+            "高端推荐",
+            "入门推荐",
+            "口感风味对比",
+            "颜色成熟度判断",
+            "新鲜度/品质细节",
+            "价格/规格参考",
+            "适合人群/场景",
+            "下单选择总结",
+        ]
+
+
+def test_ecommerce_analyze_builds_fashion_detail_page_script(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        response = client.post(
+            "/api/ecommerce/analyze",
+            data={
+                "product_name": "短袖印花T恤",
+                "materials": "白色棉感针织面料，罗纹圆领，彩色图文印花",
+                "selling_points": "白色百搭、宽松版型、正面大印花",
+                "scenarios": "淘宝商品详情页、街头穿搭",
+                "image_count": "9",
+            },
+            files={"image": ("shirt.png", b"fake-shirt", "image/png")},
+        )
+
+        assert response.status_code == 200
+        screens = response.json()["plans"][0]["screens"]
+        assert [screen["layout_type"] for screen in screens] == [
+            "model_fit",
+            "spec_table",
+            "detail_callout",
+            "material_closeup",
+            "scene_lifestyle",
+            "size_chart",
+            "multi_angle",
+            "comparison",
+            "conversion",
+        ]
+        assert screens[1]["needs_specs"] is True
+        assert screens[5]["copy_density"] == "high"
+
+
+def test_ecommerce_analyze_requires_login(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/api/ecommerce/analyze",
+            data={"product_name": "测试商品"},
+            files={"image": ("product.png", b"fake-product", "image/png")},
+        )
+
+        assert response.status_code == 401
+
+
 def test_guest_generation_requires_login(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         client.put("/api/config", json={"api_key": "sk-test-123456"})
@@ -631,6 +879,43 @@ def test_generation_retries_retryable_upstream_errors(tmp_path: Path) -> None:
         assert task["status"] == "succeeded"
         assert provider.generate_attempts == 3
         assert task["items"][0]["status"] == "succeeded"
+
+
+def test_generation_surfaces_billing_errors_in_task(tmp_path: Path) -> None:
+    provider = BillingErrorProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        generated = client.post("/api/images/generate", json={"prompt": "billing check"})
+
+        assert generated.status_code == 200
+        task = wait_for_task(client, generated.json()["id"], attempts=120)
+        assert task["status"] == "failed"
+        assert task["error"] == "余额不足，请充值或更换 API Key 后重试"
+        assert task["result"]["error"] == "余额不足，请充值或更换 API Key 后重试"
+        assert task["items"][0]["error"] == "余额不足，请充值或更换 API Key 后重试"
+
+
+def test_multi_generation_surfaces_partial_billing_errors(tmp_path: Path) -> None:
+    provider = PartiallyBillingErrorProvider(fail_after=1)
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        generated = client.post(
+            "/api/images/generate",
+            json={"prompt": "three cards with low balance", "size": "1K", "aspect_ratio": "1:1", "n": 3},
+        )
+
+        assert generated.status_code == 200
+        task = wait_for_task(client, generated.json()["id"], attempts=120)
+        assert task["status"] == "succeeded"
+        assert task["result"]["count_requested"] == 3
+        assert task["result"]["count_succeeded"] == 1
+        assert task["error"] == "2 张图片生成失败：余额不足，请充值或更换 API Key 后重试"
+        assert [item["error"] for item in task["result"]["partial_errors"]] == [
+            "余额不足，请充值或更换 API Key 后重试",
+            "余额不足，请充值或更换 API Key 后重试",
+        ]
 
 
 def test_generation_records_nonzero_ledger_amount(tmp_path: Path) -> None:
@@ -852,6 +1137,38 @@ def test_ecommerce_generate_analyzes_product_and_creates_series_edit_task(tmp_pa
         assert planner_messages and "商品图识别结果" in planner_messages[-1]
 
 
+def test_ecommerce_analyze_surfaces_billing_errors(tmp_path: Path) -> None:
+    provider = BillingErrorProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        response = client.post(
+            "/api/ecommerce/analyze",
+            data={"product_name": "低余额商品", "image_count": "4"},
+            files={"image": ("product.png", b"fake-product", "image/png")},
+        )
+
+        assert response.status_code == 402
+        assert response.json()["detail"] == "余额不足，请充值或更换 API Key 后重试"
+
+
+def test_ecommerce_generate_surfaces_analysis_provider_errors_as_json(tmp_path: Path) -> None:
+    provider = ChatErrorProvider()
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        response = client.post(
+            "/api/ecommerce/generate",
+            data={"product_name": "测试商品", "n": "4"},
+            files={"image": ("product.png", b"fake-product", "image/png")},
+        )
+
+        assert response.status_code == 200
+        task = wait_for_task(client, response.json()["id"], attempts=120)
+        assert task["status"] == "failed"
+        assert task["error"] == "Upstream request failed"
+
+
 def test_ecommerce_generate_analyzes_all_reference_angles(tmp_path: Path) -> None:
     provider = FakeProvider()
     with make_client(tmp_path, provider=provider) as client:
@@ -900,6 +1217,66 @@ def test_ecommerce_generate_analyzes_all_reference_angles(tmp_path: Path) -> Non
         assert all("图2：侧面" in fields["prompt"] for fields in provider.edited_fields)
         assert len(provider.edited_images[-1]) == 2
         assert task["items"][0]["task_request"]["reference_notes"][1]["role"] == "侧面"
+
+
+def test_ecommerce_generate_uses_selected_plan_as_blueprint(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    selected_plan = {
+        "name": "榴莲九屏详情页",
+        "platform": "淘宝",
+        "style": "白底高级电商详情页",
+        "image_count": 9,
+        "materials": "榴莲",
+        "selling_points": "口感、价格、外观、品种对比",
+        "scenarios": "水果摊、商超、线上详情页",
+        "extra_requirements": "严格按九屏方案生成",
+        "reason": "用于榴莲品种导购",
+        "screens": [
+            {
+                "title": f"第{index}屏方案标题",
+                "copy": f"第{index}屏方案说明",
+                "layout_type": "spec_table" if index == 2 else "hero",
+            }
+            for index in range(1, 10)
+        ],
+    }
+    with make_client(tmp_path, provider=provider) as client:
+        login_demo_user(client)
+
+        response = client.post(
+            "/api/ecommerce/generate",
+            data={
+                "product_name": "榴莲大全",
+                "materials": "榴莲",
+                "n": "9",
+                "size": "1K",
+                "aspect_ratio": "9:16",
+                "selected_plan": json.dumps(selected_plan, ensure_ascii=False),
+            },
+            files={"image": ("durian.png", b"fake-product", "image/png")},
+        )
+
+        assert response.status_code == 200
+        task = wait_for_task(client, response.json()["id"], attempts=160)
+        assert task["status"] == "succeeded"
+        assert len(task["items"]) == 9
+        assert task["result"]["series_plan"]["source"] == "selected_plan"
+        assert task["result"]["selected_plan"]["image_count"] == 9
+        assert task["result"]["series_plan"]["items"][0]["title"] == "第1屏方案标题"
+        assert task["result"]["series_plan"]["items"][8]["title"] == "第9屏方案标题"
+        assert task["result"]["series_plan"]["items"][1]["layout_type"] == "spec_table"
+        assert "禁止作为图片里的可见标题" in provider.edited_fields[0]["prompt"]
+        assert "禁止作为图片里的可见标题" in provider.edited_fields[1]["prompt"]
+        assert "本屏后台模块名是“第1屏方案标题”" in provider.edited_fields[0]["prompt"]
+        assert "本屏后台模块名是“第2屏方案标题”" in provider.edited_fields[1]["prompt"]
+        assert "如需要可见文字，优先自然改写这句面向用户的文案：第1屏方案说明" in provider.edited_fields[0]["prompt"]
+        assert "如需要可见文字，优先自然改写这句面向用户的文案：第2屏方案说明" in provider.edited_fields[1]["prompt"]
+        planner_messages = [
+            payload["messages"][1]["content"]
+            for payload in provider.chat_payloads
+            if "系列图像提示词规划师" in payload["messages"][0]["content"]
+        ]
+        assert planner_messages and "selected_plan" in planner_messages[-1]
 
 
 def test_history_item_can_be_used_as_single_edit_source(tmp_path: Path) -> None:

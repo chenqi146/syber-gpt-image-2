@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Clipboard, Download, ImagePlus, Loader2, Maximize2, Paperclip, PencilLine, RefreshCw, Sparkles, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Download, ImagePlus, Loader2, Maximize2, Paperclip, PencilLine, RefreshCw, Sparkles, Trash2, X } from 'lucide-react';
 import {
+  analyzeEcommerceProduct,
   deleteHistory,
   editHistoryImage,
   formatDate,
@@ -10,7 +11,9 @@ import {
   generateEcommerceImages,
   getConfig,
   getHistory,
+  type EcommerceAnalyzeResult,
   type EcommercePublishCopyResult,
+  type EcommerceRecommendedPlan,
   HistoryItem,
 } from '../api';
 import CompactInput from '../components/CompactInput';
@@ -71,6 +74,9 @@ export default function Ecommerce() {
   const [editReferencePreviews, setEditReferencePreviews] = useState<{ id: string; name: string; url: string }[]>([]);
   const [publishCopies, setPublishCopies] = useState<Record<string, EcommercePublishCopyResult>>({});
   const [publishCopyLoadingKey, setPublishCopyLoadingKey] = useState<string | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<EcommerceAnalyzeResult | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<EcommerceRecommendedPlan | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -98,6 +104,14 @@ export default function Ecommerce() {
       setImageScale('2K');
     }
   }, [aspectRatio, imageScale]);
+
+  useEffect(() => {
+    if (!selectedPlan) return;
+    const count = Math.max(1, Math.min(9, Number(imageCount) || 4));
+    if (selectedPlan.image_count !== count) {
+      setSelectedPlan(null);
+    }
+  }, [imageCount, selectedPlan]);
 
   useEffect(() => {
     if (!productImage) {
@@ -160,6 +174,8 @@ export default function Ecommerce() {
         return;
       }
       setProductImage(image);
+      setAnalysisResult(null);
+      setSelectedPlan(null);
       const readyMessage = t('home_ecom_image_ready');
       notifySuccess(readyMessage);
     },
@@ -186,6 +202,8 @@ export default function Ecommerce() {
         return;
       }
       setProductReferences((current) => [...current, ...images.map((file) => createReferenceEntry(file, '侧面'))].slice(0, 8));
+      setAnalysisResult(null);
+      setSelectedPlan(null);
     },
     [notifyError, t],
   );
@@ -243,6 +261,29 @@ export default function Ecommerce() {
     );
   }
 
+  function resetEcommerceForm() {
+    setProductImage(null);
+    setProductReferenceRole(DEFAULT_REFERENCE_ROLE);
+    setProductReferenceNote('');
+    setProductReferences([]);
+    setForm({
+      productName: '',
+      materials: '',
+      sellingPoints: '',
+      scenarios: '',
+      platform: '淘宝/抖音',
+      style: '高级、干净、统一电商详情页',
+      extraRequirements: '',
+    });
+    setAnalysisResult(null);
+    setSelectedPlan(null);
+    setSelectedGroupKey(null);
+    setEditingItem(null);
+    setEditPrompt('');
+    setEditReferences([]);
+    notifyInfo(t('ecom_form_reset'));
+  }
+
   async function handleSubmit() {
     if (!productImage || loading) {
       if (!productImage) notifyError(t('home_ecom_missing_image'));
@@ -269,6 +310,8 @@ export default function Ecommerce() {
           aspect_ratio: aspectRatio,
           quality: imageQuality,
           n: Math.max(1, Math.min(9, Number(imageCount) || 4)),
+          selected_plan: selectedPlan,
+          analysis: analysisResult?.analysis || null,
         },
         [
           {
@@ -284,6 +327,7 @@ export default function Ecommerce() {
           })),
         ],
       );
+      setSelectedPlan(null);
       addTask(task);
       openDrawer();
       const nextMessage = task.status === 'queued' ? t('home_message_queued') : t('home_message_processing');
@@ -293,6 +337,82 @@ export default function Ecommerce() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleAnalyzeProduct() {
+    if (!productImage || analyzing) {
+      if (!productImage) notifyError(t('home_ecom_missing_image'));
+      return;
+    }
+    if (!viewer?.authenticated) {
+      notifyError(t('ecom_generation_login_required'));
+      return;
+    }
+    setAnalyzing(true);
+    notifyInfo(t('ecom_analyzing'));
+    try {
+      const result = await analyzeEcommerceProduct(
+        {
+          product_name: form.productName,
+          materials: form.materials,
+          selling_points: form.sellingPoints,
+          scenarios: form.scenarios,
+          platform: form.platform,
+          style: form.style,
+          extra_requirements: form.extraRequirements,
+          size: providerImageSize(imageScale, aspectRatio),
+          aspect_ratio: aspectRatio,
+          image_count: Math.max(1, Math.min(9, Number(imageCount) || 4)),
+        },
+        [
+          {
+            file: productImage,
+            role: productReferenceRole,
+            note: productReferenceNote,
+            primary: true,
+          },
+          ...productReferences.map((reference) => ({
+            file: reference.file,
+            role: reference.role,
+            note: reference.note,
+          })),
+        ],
+      );
+      setAnalysisResult(result);
+      setSelectedPlan(null);
+      setForm((current) => ({
+        productName: current.productName || result.form.product_name || '',
+        materials: current.materials || result.form.materials || '',
+        sellingPoints: current.sellingPoints || result.form.selling_points || '',
+        scenarios: current.scenarios || result.form.scenarios || '',
+        platform: current.platform || result.form.platform || '淘宝/抖音',
+        style: current.style || result.form.style || '高级、干净、统一电商详情页',
+        extraRequirements: current.extraRequirements || result.form.extra_requirements || '',
+      }));
+      if (result.form.image_count) setImageCount(String(Math.max(1, Math.min(9, result.form.image_count))));
+      notifySuccess(t('ecom_analysis_ready'));
+    } catch (err) {
+      notifyError(err);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  function applyPlan(plan: EcommerceRecommendedPlan) {
+    const count = Math.max(1, Math.min(9, plan.image_count || Number(imageCount) || 4));
+    const normalizedPlan = { ...plan, image_count: count, screens: plan.screens.slice(0, count) };
+    setForm((current) => ({
+      productName: current.productName || analysisResult?.form.product_name || '',
+      materials: normalizedPlan.materials || current.materials,
+      sellingPoints: normalizedPlan.selling_points || current.sellingPoints,
+      scenarios: normalizedPlan.scenarios || current.scenarios,
+      platform: normalizedPlan.platform || current.platform,
+      style: normalizedPlan.style || current.style,
+      extraRequirements: normalizedPlan.extra_requirements || current.extraRequirements,
+    }));
+    setSelectedPlan(normalizedPlan);
+    setImageCount(String(count));
+    notifySuccess(t('ecom_plan_applied'));
   }
 
   async function handleDeleteGroup(group: HistoryGroup) {
@@ -490,6 +610,8 @@ export default function Ecommerce() {
                 type="button"
                 onClick={() => {
                   setProductImage(null);
+                  setAnalysisResult(null);
+                  setSelectedPlan(null);
                   const removedMessage = t('home_ecom_image_removed');
                   notifyInfo(removedMessage);
                 }}
@@ -568,7 +690,11 @@ export default function Ecommerce() {
                     note={productReferences[index]?.note || ''}
                     onRoleChange={(role) => updateProductReference(index, { role })}
                     onNoteChange={(note) => updateProductReference(index, { note })}
-                    onRemove={() => setProductReferences((current) => current.filter((_, currentIndex) => currentIndex !== index))}
+                    onRemove={() => {
+                      setProductReferences((current) => current.filter((_, currentIndex) => currentIndex !== index));
+                      setAnalysisResult(null);
+                      setSelectedPlan(null);
+                    }}
                     onPreview={() => setPreviewItem({ imageUrl: preview.url, prompt: preview.name })}
                     t={t}
                   />
@@ -580,14 +706,51 @@ export default function Ecommerce() {
           </div>
         </div>
 
-        <button
-          className="flex h-12 items-center justify-center bg-primary px-5 text-sm font-black uppercase tracking-widest text-black shadow-[0_0_15px_rgba(0,243,255,0.4)] transition-transform hover:scale-95 disabled:opacity-40 lg:h-full lg:w-32"
-          type="button"
-          disabled={loading || !productImage}
-          onClick={handleSubmit}
-        >
-          {loading ? <Loader2 className="animate-spin" size={22} /> : t('home_execute')}
-        </button>
+        <div className="grid grid-cols-2 gap-2 lg:h-full lg:w-36 lg:grid-cols-1">
+          <button
+            className="flex h-12 items-center justify-center bg-primary px-5 text-sm font-black uppercase tracking-widest text-black shadow-[0_0_15px_rgba(0,243,255,0.4)] transition-transform hover:scale-95 disabled:opacity-40 lg:h-auto lg:flex-1"
+            type="button"
+            disabled={loading || !productImage}
+            onClick={handleSubmit}
+          >
+            {loading ? <Loader2 className="animate-spin" size={22} /> : t('home_execute')}
+          </button>
+          <button
+            className="flex h-12 items-center justify-center gap-2 border border-white/15 bg-white/[0.03] px-3 text-[10px] font-black uppercase tracking-widest text-white/60 hover:border-secondary hover:text-secondary disabled:opacity-40 lg:h-11"
+            type="button"
+            disabled={loading || analyzing}
+            onClick={resetEcommerceForm}
+          >
+            <RefreshCw size={14} />
+            {t('ecom_reset_form')}
+          </button>
+        </div>
+      </section>
+
+      <section className="mb-8 border border-secondary/20 bg-black/55 p-4">
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-secondary">
+              <Sparkles size={14} />
+              {t('ecom_ai_designer')}
+            </div>
+            <p className="text-xs leading-5 text-white/50">{t('ecom_ai_designer_hint')}</p>
+          </div>
+          <button
+            className="flex h-10 items-center justify-center gap-2 bg-secondary px-4 text-[10px] font-black uppercase tracking-widest text-black hover:bg-white disabled:opacity-50"
+            type="button"
+            disabled={analyzing || !productImage}
+            onClick={handleAnalyzeProduct}
+          >
+            {analyzing ? <Loader2 className="animate-spin" size={14} /> : <Sparkles size={14} />}
+            {analyzing ? t('ecom_analyzing') : t('ecom_analyze_product')}
+          </button>
+        </div>
+        {analysisResult ? (
+          <EcommerceAnalysisPanel result={analysisResult} onApplyPlan={applyPlan} t={t} />
+        ) : (
+          <div className="border border-dashed border-white/10 bg-white/[0.02] p-4 text-xs leading-6 text-white/45">{t('ecom_analysis_empty')}</div>
+        )}
       </section>
 
       {selectedGroup ? (
@@ -723,6 +886,110 @@ export default function Ecommerce() {
           </button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function EcommerceAnalysisPanel({
+  result,
+  onApplyPlan,
+  t,
+}: {
+  result: EcommerceAnalyzeResult;
+  onApplyPlan: (plan: EcommerceRecommendedPlan) => void;
+  t: (key: any, vars?: Record<string, string | number>) => string;
+}) {
+  const analysis = result.analysis || {};
+  const chips = [
+    ...(analysis.colors || []),
+    ...(analysis.details || []),
+    ...(analysis.selling_points || []),
+    ...(analysis.use_scenarios || []),
+  ].filter(Boolean);
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
+      <div className="border border-white/10 bg-white/[0.03] p-3">
+        <div className="mb-2 text-[9px] uppercase tracking-widest text-white/35">{t('ecom_analysis_summary')}</div>
+        <div className="space-y-3 text-xs leading-6 text-white/70">
+          <SummaryLine label={t('ecom_analysis_type')} value={analysis.product_type || result.form.product_name} />
+          <SummaryLine label={t('ecom_analysis_appearance')} value={analysis.appearance} />
+          <SummaryLine label={t('ecom_analysis_material')} value={analysis.visible_material || result.form.materials} />
+          <SummaryLine label={t('ecom_analysis_constraints')} value={analysis.generation_constraints} />
+        </div>
+        {chips.length > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {chips.slice(0, 14).map((chip) => (
+              <span key={chip} className="border border-secondary/20 bg-secondary/10 px-2 py-1 text-[10px] text-secondary">
+                {chip}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        {result.plans.map((plan) => (
+          <button
+            key={plan.name}
+            className="flex min-h-[240px] flex-col border border-primary/20 bg-black p-3 text-left transition-colors hover:border-secondary hover:bg-secondary/5"
+            type="button"
+            onClick={() => onApplyPlan(plan)}
+          >
+            <div className="mb-2 flex items-start justify-between gap-2">
+              <h3 className="text-base font-black leading-6 text-white">{plan.name}</h3>
+              <span className="shrink-0 border border-secondary/30 px-2 py-1 text-[9px] uppercase tracking-widest text-secondary">x{plan.image_count}</span>
+            </div>
+            <div className="mb-3 line-clamp-2 text-xs leading-5 text-white/55">{plan.reason || plan.style}</div>
+            <div className="mb-3 flex flex-wrap gap-1.5 text-[9px] uppercase tracking-widest text-white/35">
+              <span>{plan.platform}</span>
+              <span>{plan.style}</span>
+            </div>
+            <div className="space-y-1.5">
+              {plan.screens.map((screen, index) => (
+                <div key={`${plan.name}-${screen.title}-${index}`} className="border border-white/10 bg-white/[0.03] px-2 py-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1 text-[10px] font-bold text-primary">{index + 1}. {screen.title}</div>
+                    {screen.layout_type ? (
+                      <span className="shrink-0 border border-white/10 px-1.5 py-0.5 text-[8px] uppercase tracking-widest text-white/35">
+                        {layoutTypeLabel(screen.layout_type)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="line-clamp-1 text-[10px] text-white/45">{screen.visual_goal || screen.copy}</div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-auto pt-3 text-center text-[10px] font-black uppercase tracking-widest text-secondary">{t('ecom_apply_plan')}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function layoutTypeLabel(layoutType: string) {
+  const labels: Record<string, string> = {
+    hero: '主视觉',
+    social_cover: '封面',
+    model_fit: '模特',
+    scene_lifestyle: '场景',
+    material_closeup: '材质',
+    detail_callout: '细节',
+    spec_table: '参数',
+    size_chart: '尺码',
+    multi_angle: '多角度',
+    comparison: '对比',
+    conversion: '转化',
+  };
+  return labels[layoutType] || layoutType;
+}
+
+function SummaryLine({ label, value }: { label: string; value: unknown }) {
+  const text = Array.isArray(value) ? value.join('、') : String(value || '').trim();
+  if (!text) return null;
+  return (
+    <div>
+      <div className="text-[9px] uppercase tracking-widest text-white/35">{label}</div>
+      <div>{text}</div>
     </div>
   );
 }

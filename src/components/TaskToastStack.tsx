@@ -23,7 +23,7 @@ export default function TaskToastStack() {
             ? t('tasks_toast_succeeded')
             : t('tasks_toast_failed')
           : toast.title || (errored ? t('toast_error') : succeeded ? t('toast_success') : t('toast_info'));
-        const body = isTaskToast ? toast.prompt : toast.message;
+        const body = isTaskToast && errored && toast.error ? toast.error : isTaskToast ? toast.prompt : toast.message;
         return (
           <div
             key={toast.id}
@@ -50,7 +50,7 @@ export default function TaskToastStack() {
                   {title}
                 </div>
                 <p className="mt-1 line-clamp-3 text-sm text-white/85">{body}</p>
-                {isTaskToast && toast.error ? <div className="mt-2 text-xs text-error">{toast.error}</div> : null}
+                {isTaskToast && toast.error && body !== toast.error ? <div className="mt-2 text-xs text-error">{toast.error}</div> : null}
               </div>
               <button
                 className="flex h-8 w-8 items-center justify-center border border-white/10 text-white/55 transition-colors hover:border-white/25 hover:text-white"

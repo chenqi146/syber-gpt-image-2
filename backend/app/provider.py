@@ -69,8 +69,13 @@ class OpenAICompatibleImageClient:
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {api_key}"
 
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            response = await client.request(method, url, headers=headers, **kwargs)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                response = await client.request(method, url, headers=headers, **kwargs)
+        except httpx.TimeoutException as exc:
+            raise ProviderError(504, "JokoAI 上游请求超时，请稍后重试或降低批量张数") from exc
+        except httpx.RequestError as exc:
+            raise ProviderError(502, f"JokoAI 上游请求失败：{exc.__class__.__name__}") from exc
 
         if response.status_code >= 400:
             raise ProviderError(response.status_code, _extract_error_message(response), _safe_json(response))

@@ -52,7 +52,7 @@ export type HistoryItem = {
     series_plan?: {
       source?: string;
       style_guide?: string;
-      items?: { index: number; title: string; copy: string; prompt: string }[];
+      items?: { index: number; title: string; copy: string; layout_type?: string; visual_goal?: string; prompt: string }[];
     };
     [key: string]: unknown;
   } | null;
@@ -336,6 +336,61 @@ export type EcommercePublishCopyResult = {
   usage: Record<string, unknown> | null;
 };
 
+export type EcommerceRecommendedPlan = {
+  name: string;
+  platform: string;
+  style: string;
+  image_count: number;
+  materials: string;
+  selling_points: string;
+  scenarios: string;
+  extra_requirements: string;
+  reason: string;
+  screens: {
+    title: string;
+    copy: string;
+    layout_type?: string;
+    visual_goal?: string;
+    copy_density?: string;
+    needs_model?: boolean;
+    needs_specs?: boolean;
+    needs_closeup?: boolean;
+    reference_focus?: string[];
+  }[];
+};
+
+export type EcommerceAnalyzeResult = {
+  analysis: {
+    source?: string;
+    product_type?: string;
+    appearance?: string;
+    visible_material?: string;
+    colors?: string[];
+    shape?: string;
+    details?: string[];
+    selling_points?: string[];
+    target_audience?: string[];
+    use_scenarios?: string[];
+    style_suggestions?: string[];
+    generation_constraints?: string;
+    recommended_plans?: EcommerceRecommendedPlan[];
+    [key: string]: unknown;
+  };
+  reference_notes: ImageReferenceNote[];
+  model: string;
+  form: {
+    product_name: string;
+    materials: string;
+    selling_points: string;
+    scenarios: string;
+    platform: string;
+    style: string;
+    extra_requirements: string;
+    image_count: number;
+  };
+  plans: EcommerceRecommendedPlan[];
+};
+
 export type EcommerceGeneratePayload = {
   product_name?: string;
   materials?: string;
@@ -349,6 +404,12 @@ export type EcommerceGeneratePayload = {
   aspect_ratio?: string;
   quality?: string;
   n?: number;
+  selected_plan?: EcommerceRecommendedPlan | null;
+  analysis?: EcommerceAnalyzeResult['analysis'] | null;
+};
+
+export type EcommerceAnalyzePayload = Omit<EcommerceGeneratePayload, 'quality' | 'n'> & {
+  image_count?: number;
 };
 
 export type EcommerceReferenceImage = ImageReferenceInput;
@@ -415,7 +476,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     },
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { detail: text };
+    }
+  }
   if (!response.ok) {
     const detail = data?.detail || data?.message || response.statusText;
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
@@ -691,6 +759,48 @@ export function generateEcommercePublishCopy(payload: EcommercePublishCopyPayloa
   });
 }
 
+function appendEcommerceForm(form: FormData, payload: EcommerceGeneratePayload | EcommerceAnalyzePayload) {
+  if (payload.product_name) form.set('product_name', payload.product_name);
+  if (payload.materials) form.set('materials', payload.materials);
+  if (payload.selling_points) form.set('selling_points', payload.selling_points);
+  if (payload.scenarios) form.set('scenarios', payload.scenarios);
+  if (payload.platform) form.set('platform', payload.platform);
+  if (payload.style) form.set('style', payload.style);
+  if (payload.extra_requirements) form.set('extra_requirements', payload.extra_requirements);
+  if (payload.model) form.set('model', payload.model);
+  if (payload.size) form.set('size', payload.size);
+  if (payload.aspect_ratio) form.set('aspect_ratio', payload.aspect_ratio);
+  if ('selected_plan' in payload && payload.selected_plan) form.set('selected_plan', JSON.stringify(payload.selected_plan));
+  if ('analysis' in payload && payload.analysis) form.set('analysis', JSON.stringify(payload.analysis));
+}
+
+function appendEcommerceReferences(form: FormData, image: File | EcommerceReferenceImage[]) {
+  const references: EcommerceReferenceImage[] = Array.isArray(image) ? image : [{ file: image, primary: true }];
+  const primaryIndex = Math.max(0, references.findIndex((reference) => reference.primary));
+  const primary = references[primaryIndex] || references[0];
+  form.set('image', primary.file);
+  const extraReferences = references.filter((_, index) => index !== primaryIndex);
+  const notes = references.map((reference, index) => ({
+    index,
+    role: reference.role || (index === primaryIndex ? '商品主图' : ''),
+    note: reference.note || '',
+    primary: index === primaryIndex,
+  }));
+  form.set('reference_notes', JSON.stringify(notes));
+  extraReferences.forEach((reference) => form.append('reference_image', reference.file));
+}
+
+export function analyzeEcommerceProduct(payload: EcommerceAnalyzePayload, image: File | EcommerceReferenceImage[]) {
+  const form = new FormData();
+  appendEcommerceReferences(form, image);
+  appendEcommerceForm(form, payload);
+  form.set('image_count', String(payload.image_count || 4));
+  return request<EcommerceAnalyzeResult>('/api/ecommerce/analyze', {
+    method: 'POST',
+    body: form,
+  });
+}
+
 export function editImage(payload: GeneratePayload, images: File | File[] | ImageReferenceInput[]) {
   const form = new FormData();
   const referenceList: ImageReferenceInput[] = Array.isArray(images)
@@ -711,29 +821,8 @@ export function editImage(payload: GeneratePayload, images: File | File[] | Imag
 
 export function generateEcommerceImages(payload: EcommerceGeneratePayload, image: File | EcommerceReferenceImage[]) {
   const form = new FormData();
-  const references: EcommerceReferenceImage[] = Array.isArray(image) ? image : [{ file: image, primary: true }];
-  const primaryIndex = Math.max(0, references.findIndex((reference) => reference.primary));
-  const primary = references[primaryIndex] || references[0];
-  form.set('image', primary.file);
-  const extraReferences = references.filter((_, index) => index !== primaryIndex);
-  const notes = references.map((reference, index) => ({
-    index,
-    role: reference.role || (index === primaryIndex ? '商品主图' : ''),
-    note: reference.note || '',
-    primary: index === primaryIndex,
-  }));
-  form.set('reference_notes', JSON.stringify(notes));
-  extraReferences.forEach((reference) => form.append('reference_image', reference.file));
-  if (payload.product_name) form.set('product_name', payload.product_name);
-  if (payload.materials) form.set('materials', payload.materials);
-  if (payload.selling_points) form.set('selling_points', payload.selling_points);
-  if (payload.scenarios) form.set('scenarios', payload.scenarios);
-  if (payload.platform) form.set('platform', payload.platform);
-  if (payload.style) form.set('style', payload.style);
-  if (payload.extra_requirements) form.set('extra_requirements', payload.extra_requirements);
-  if (payload.model) form.set('model', payload.model);
-  if (payload.size) form.set('size', payload.size);
-  if (payload.aspect_ratio) form.set('aspect_ratio', payload.aspect_ratio);
+  appendEcommerceReferences(form, image);
+  appendEcommerceForm(form, payload);
   if (payload.quality) form.set('quality', payload.quality);
   form.set('n', String(payload.n || 4));
   return request<ImageTask>('/api/ecommerce/generate', {
