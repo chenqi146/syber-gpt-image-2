@@ -1,6 +1,5 @@
-FROM node:22.22.3-alpine AS frontend-build
+FROM node:24.15.0-alpine AS frontend-build
 WORKDIR /app
-RUN npm install -g npm@11.14.1
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY index.html metadata.json tsconfig.json vite.config.ts ./
