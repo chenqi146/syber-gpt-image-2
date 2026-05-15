@@ -3,6 +3,7 @@ services:
     build:
       context: .
       target: backend
+      network: host
     image: joko-image-backend:local
     restart: unless-stopped
     environment:
@@ -53,6 +54,7 @@ services:
     build:
       context: .
       target: web
+      network: host
     image: joko-image-web:local
     restart: unless-stopped
     depends_on:
